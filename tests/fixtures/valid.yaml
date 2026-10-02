@@ -1,0 +1,11 @@
+application:
+  name: edgeflow-test
+  environment: staging
+  log_level: debug
+
+server:
+  host: 127.0.0.1
+  port: 9090
+
+shutdown:
+  grace_period_seconds: 3

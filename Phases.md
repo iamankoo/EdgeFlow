@@ -1,6 +1,6 @@
 # EdgeFlow — Development Phases
 
-**Current Phase: Initialization / Pre-Phase 1**
+**Current Phase: Phase 1 completed — awaiting Phase 2 requirements**
 
 This document is the authoritative roadmap. Phases must not be skipped. A phase begins only after the previous phase has met its exit condition. Later-phase functionality must not be implemented early unless strictly required as a dependency and clearly documented.
 
@@ -8,7 +8,7 @@ Before implementing a phase, its detailed implementation prompt must be cross-ch
 
 | Phase | Title | Status |
 |-------|-------|--------|
-| 1 | Foundation & Core Infrastructure | Not started |
+| 1 | Foundation & Core Infrastructure | Completed |
 | 2 | TCP/HTTP Networking Engine | Not started |
 | 3 | Service Discovery & Registry | Not started |
 | 4 | Health Checking & Dynamic Discovery | Not started |
@@ -40,6 +40,8 @@ Build:
 - graceful shutdown
 
 **Exit condition:** EdgeFlow starts, loads configuration, initializes required infrastructure, logs lifecycle events, and shuts down cleanly.
+
+**Completion summary:** Met. The CMake/C++20 project, pinned dependencies (spdlog, yaml-cpp, GoogleTest), strict YAML configuration, spdlog logging, application lifecycle with SIGINT/SIGTERM graceful shutdown, multi-stage Dockerfile, Docker Compose file, and GitHub Actions workflow are in place. 56 tests pass; the container starts, logs its lifecycle, and exits 0 on `docker stop` (SIGTERM) and SIGINT. See `summary.md` for details.
 
 ---
 

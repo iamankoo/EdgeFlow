@@ -1,6 +1,6 @@
 # EdgeFlow — Architecture
 
-> **Status:** This document describes the **target (planned) architecture**. As of Pre-Phase 1, none of it is implemented. Components are introduced phase by phase according to [Phases.md](Phases.md).
+> **Status:** Sections 1-16 describe the **target architecture**; only the foundation in the "Phase 1 Implementation" section at the end is implemented. All other components are introduced phase by phase according to [Phases.md](Phases.md).
 
 ## 1. High-Level Architecture
 
@@ -125,3 +125,53 @@ Docker Compose runs: EdgeFlow, multiple backend service instances, PostgreSQL, a
 - Asynchronous I/O (Boost.Asio/Beast) rather than thread-per-connection.
 - Graceful degradation: cache or rate-limit store failure must not take down the gateway.
 - Performance claims are made only from measured, reproducible benchmarks.
+
+## 17. Phase 1 Implementation
+
+### Implemented in Phase 1
+
+```text
+include/edgeflow/  config/{Config, ConfigManager}   logging/Logger
+                   core/{Application, ShutdownCoordinator, SignalHandler, CommandLine}
+src/               matching implementations + main.cpp
+```
+
+Built as a static library `edgeflow_core` (alias `edgeflow::core`), a thin `edgeflow` executable, and the `edgeflow_tests` GoogleTest binary.
+
+| Component | Responsibility |
+|-----------|----------------|
+| `ConfigManager` / `Config` | Reads YAML into typed structs. Defaults for missing fields; rejects unknown keys, wrong types, out-of-range values; reports all errors; keeps the previous config on failure. Files over 1 MiB are refused. |
+| `Logger` | Wraps a private (non-global) spdlog logger. Levels debug/info/warn/error (plus trace/critical/off). Sinks are injectable for tests. |
+| `Application` | Lifecycle: construct, `initialize()`, `run()`, `shutdown()`. Receives config and logger by injection. |
+| `ShutdownCoordinator` | Ordered, idempotent, thread-safe shutdown. Components register stop callbacks; they run once in reverse registration order; a throwing callback is logged and does not stop the rest. |
+| `SignalHandler` | RAII SIGINT/SIGTERM handlers that only set a lock-free atomic. One instance at a time. |
+| `CommandLine` | `--config`, `--version`, `--help`; config path precedence flag > `$EDGEFLOW_CONFIG` > default. |
+
+### Lifecycle flow
+
+```text
+main
+ ├─ parse command line
+ ├─ ConfigManager::load        (failure: errors to stderr, exit 2)
+ ├─ create Logger from config  → "EdgeFlow starting", "configuration loaded"
+ ├─ Application::initialize    → install signal handlers, register them with the
+ │                               ShutdownCoordinator → "application initialized"
+ │                               (failure: exit 1)
+ └─ Application::run           → "EdgeFlow ready", wait for signal / requestShutdown()
+      └─ "shutdown requested" → ShutdownCoordinator::shutdown
+            → "shutdown sequence started" → stop components (reverse order)
+            → flush → "shutdown completed" → exit 0
+```
+
+Configuration is loaded before logging exists (the log level comes from it), so configuration failures are written to stderr.
+
+### Shutdown behavior
+
+- A signal handler never logs or locks; it stores the signal number. `run()` polls it every 50 ms and also wakes immediately on `requestShutdown()`.
+- Repeated or concurrent `shutdown()` calls run cleanup exactly once; later callers block until it has completed.
+- There are no connections to drain yet. Future networking components register a stop callback with `Application::shutdownCoordinator()`.
+- `shutdown.grace_period_seconds` is logged and a warning is emitted if shutdown exceeds it. Callbacks are not forcibly interrupted.
+
+### Planned in later phases
+
+Everything in sections 1-16 other than the above: networking, gateway pipeline, discovery, health checks, routing, proxy, reliability, rate limiting, caching, storage clients, metrics and tracing. The `server` configuration section is validated in Phase 1 but nothing listens on it.

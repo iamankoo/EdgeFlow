@@ -1,0 +1,10 @@
+.git
+.github
+build
+cmake-build-*
+Testing
+.vscode
+.idea
+.env
+.env.*
+*.md

@@ -1,0 +1,18 @@
+name: edgeflow
+
+services:
+  edgeflow:
+    build:
+      context: .
+    image: edgeflow:phase1
+    container_name: edgeflow
+    restart: "no"
+    volumes:
+      - ./config/config.yaml:/etc/edgeflow/config.yaml:ro
+    # Must exceed shutdown.grace_period_seconds so a graceful stop is never killed.
+    stop_grace_period: 10s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

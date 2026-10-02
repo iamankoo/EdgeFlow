@@ -1,0 +1,31 @@
+# Build output
+build/
+cmake-build-*/
+out/
+Testing/
+coverage/
+.cache/
+compile_commands.json
+CMakeUserPresets.json
+
+# Objects and binaries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key

@@ -1,0 +1,15 @@
+# EdgeFlow foundation configuration.
+# Unknown keys are rejected so that typos are caught at startup.
+
+application:
+  name: edgeflow
+  environment: development   # development | staging | production
+  log_level: info            # trace | debug | info | warn | error | critical | off
+
+# Reserved for the networking engine. Nothing listens on this endpoint yet.
+server:
+  host: 0.0.0.0
+  port: 8080
+
+shutdown:
+  grace_period_seconds: 5    # 0..300
