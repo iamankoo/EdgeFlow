@@ -293,6 +293,18 @@ HttpResponse RegistryRequestHandler::handle(const HttpRequest& request) {
     return jsonResponse(request, http::status::ok, {{"services", services.value()}});
   }
 
+  // /services/{service}/routable: the instances routing may use (active AND healthy).
+  if (segments.size() == 3 && segments[2] == "routable" && !segments[1].empty()) {
+    if (method != http::verb::get) return methodNotAllowed(request, "GET");
+    const std::string service{segments[1]};
+    auto instances = registry_->lookupRoutable(service);
+    if (!instances) return fromError(request, instances.error());
+    json list = json::array();
+    for (const auto& instance : instances.value()) list.push_back(toJson(instance));
+    return jsonResponse(request, http::status::ok,
+                        {{"service", service}, {"count", list.size()}, {"instances", list}});
+  }
+
   // /services/{service}/instances[/{instance}]
   if (segments.size() < 3 || segments.size() > 4 || segments[2] != "instances" ||
       segments[1].empty() || (segments.size() == 4 && segments[3].empty())) {

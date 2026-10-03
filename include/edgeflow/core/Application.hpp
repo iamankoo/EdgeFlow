@@ -9,6 +9,8 @@
 #include "edgeflow/config/Config.hpp"
 #include "edgeflow/core/ShutdownCoordinator.hpp"
 #include "edgeflow/core/SignalHandler.hpp"
+#include "edgeflow/discovery/HealthChecker.hpp"
+#include "edgeflow/discovery/ServiceRegistry.hpp"
 #include "edgeflow/logging/Logger.hpp"
 #include "edgeflow/network/HttpServer.hpp"
 #include "edgeflow/network/RequestHandler.hpp"
@@ -59,6 +61,15 @@ class Application {
   // Components register their stop callbacks here.
   [[nodiscard]] ShutdownCoordinator& shutdownCoordinator() noexcept { return shutdown_; }
 
+  // The service registry (null unless `database.enabled` and no custom request handler).
+  [[nodiscard]] std::shared_ptr<discovery::ServiceRegistry> registry() const noexcept {
+    return registry_;
+  }
+  // The running health checker (null unless `health_check.enabled`).
+  [[nodiscard]] discovery::HealthChecker* healthChecker() const noexcept {
+    return health_checker_.get();
+  }
+
  private:
   // Connects to PostgreSQL, applies migrations and mounts the registry API over `handler`.
   [[nodiscard]] bool initializeRegistry(std::shared_ptr<network::RequestHandler>& handler);
@@ -68,6 +79,8 @@ class Application {
   ApplicationOptions options_;
   ShutdownCoordinator shutdown_;
   std::unique_ptr<SignalHandler> signals_;
+  std::shared_ptr<discovery::ServiceRegistry> registry_;  // set when database.enabled
+  std::unique_ptr<discovery::HealthChecker> health_checker_;
   std::unique_ptr<network::HttpServer> http_server_;
 
   std::atomic<ApplicationState> state_{ApplicationState::Created};

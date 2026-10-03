@@ -68,6 +68,17 @@ bool Application::initialize() {
     signals_.reset();
     return false;
   }
+  if (config_.health_check.enabled && registry_) {
+    // Registered before the HTTP server so that, shutting down in reverse order, the HTTP
+    // server stops first and the health checker after it.
+    health_checker_ = std::make_unique<discovery::HealthChecker>(registry_, config_.health_check,
+                                                                 logger_);
+    shutdown_.registerComponent("health-checker", [this] { health_checker_->stop(); });
+    health_checker_->start();
+  } else if (config_.health_check.enabled) {
+    logger_->warn("health checking is enabled but there is no service registry (custom request "
+                  "handler): not starting it");
+  }
   shutdown_.registerComponent("http-server", [this] {
     http_server_->stop(
         std::chrono::duration_cast<std::chrono::milliseconds>(config_.shutdown.grace_period));
@@ -105,9 +116,9 @@ bool Application::initializeRegistry(std::shared_ptr<network::RequestHandler>& h
                    db.port, db.name, report.error);
     return false;
   }
-  auto registry = std::make_shared<discovery::PostgresServiceRegistry>(std::move(pool), logger_);
-  handler = std::make_shared<network::RegistryRequestHandler>(std::move(registry),
-                                                               std::move(handler), logger_);
+  registry_ = std::make_shared<discovery::PostgresServiceRegistry>(std::move(pool), logger_);
+  handler = std::make_shared<network::RegistryRequestHandler>(registry_, std::move(handler),
+                                                               logger_);
   logger_->info("service registry ready (PostgreSQL {}:{}/{}, {} migration(s) applied, "
                 "pool size {})", db.host, db.port, db.name, report.applied, db.pool_size);
   return true;

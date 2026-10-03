@@ -51,6 +51,27 @@ class ServiceRegistry {
                                                                std::string_view instance_id,
                                                                const InstanceUpdate& update) = 0;
 
+  // Every instance of every service (stable order: service, registration time, id). This is
+  // what health checking reads to find out what to probe.
+  [[nodiscard]] virtual Result<std::vector<ServiceInstance>> listInstances() = 0;
+
+  // The instances routing may use right now: registration status `active` AND health
+  // `healthy`. Draining and disabled instances are excluded however healthy they are,
+  // and healthy-looking ones are excluded while unknown or unhealthy. No ordering or
+  // selection strategy is applied (that is load balancing, Phase 5). ServiceNotFound for
+  // a never-registered service; a known service with nothing routable yields an empty list.
+  [[nodiscard]] virtual Result<std::vector<ServiceInstance>> lookupRoutable(
+      std::string_view service) = 0;
+
+  // Sets the health status of ONE incarnation of an instance: `registered_at` (as returned
+  // by the registry) must still match, otherwise InstanceNotFound. This stops a probe
+  // result that was computed for an instance which was since deregistered and registered
+  // again (possibly at another address) from being written onto the new one. Idempotent.
+  [[nodiscard]] virtual Result<ServiceInstance> updateHealth(std::string_view service,
+                                                             std::string_view instance_id,
+                                                             std::string_view registered_at,
+                                                             HealthStatus health) = 0;
+
   // Atomically adds `delta` to the connection count (clamped at zero) and returns the
   // updated instance. This is the safe primitive for concurrent increment/decrement.
   [[nodiscard]] virtual Result<ServiceInstance> adjustConnectionCount(

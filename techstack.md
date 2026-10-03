@@ -42,4 +42,5 @@ All four will be implemented (Phase 5) behind one strategy abstraction so they c
 | Timeouts | Per-connection Asio `steady_timer` (not Beast's `tcp_stream` timeouts, because those close the socket on expiry and a 408 must be written first) |
 | PostgreSQL client | libpq (the PostgreSQL C client library; `libpq-dev` to build, `libpq5` at runtime) used directly through a thin RAII wrapper with parameterised statements; no ORM or additional database framework. Server: `postgres:16` in Docker Compose |
 | Schema management | Plain SQL files in `db/migrations/`, embedded into the binary at build time and applied at startup by a small migrator (`schema_migrations` table, advisory lock) |
+| Health probing | Boost.Asio timers, resolver and sockets (TCP connect) and Boost.Beast (HTTP request and response head) on a private `io_context` thread; blocking PostgreSQL calls on a separate one-thread Asio pool. Host names are resolved by a small per-host-isolated resolver (blocking `getaddrinfo` on detached threads, capped). No new dependency |
 | Minimum CMake | 3.25 |

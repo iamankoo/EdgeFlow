@@ -1,6 +1,6 @@
 # EdgeFlow — Architecture
 
-> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation), 18 (Phase 2: networking engine) and 19 (Phase 3: service discovery and registry) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
+> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation), 18 (Phase 2: networking engine), 19 (Phase 3: service discovery and registry) and 20 (Phase 4: health checking) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
 
 ## 1. High-Level Architecture
 
@@ -65,11 +65,11 @@ src/
 
 ## 4. Service Discovery Flow
 
-Instances are registered, updated and deregistered. PostgreSQL is the persistent source of metadata. Phase 3 implements this against PostgreSQL directly (section 19). The in-memory view that is refreshed periodically for lock-light lookups on the request path is part of Phase 4 and is not implemented yet.
+Instances are registered, updated and deregistered. PostgreSQL is the persistent source of metadata. Phase 3 implements this against PostgreSQL directly (section 19). Phase 4 (section 20) adds health checking and the routable view on top of it. A cached, lock-light in-memory view for the request path is not implemented; PostgreSQL stays the only copy of registry state.
 
 ## 5. Health-Check Flow
 
-`HealthChecker` periodically probes each instance (TCP connect or HTTP endpoint). Consecutive failures move an instance to unhealthy and exclude it from routing; consecutive successes restore it. Transitions are logged and counted.
+`HealthChecker` periodically probes each instance (TCP connect or HTTP endpoint). Consecutive failures move an instance to unhealthy and exclude it from routing; consecutive successes restore it. Implemented in Phase 4 (section 20); transitions are logged. Counting them as metrics is part of Phase 9.
 
 ## 6. Load-Balancing Flow
 
@@ -325,3 +325,71 @@ With `database.enabled: true`, `Application::initialize()` creates the pool, app
 ### Planned in later phases
 
 Periodic health checking that writes `health_status` (Phase 4), instance selection (Phase 5), request forwarding and `connection_count` maintenance (Phase 6).
+
+## 20. Phase 4 Implementation: Health Checking & Dynamic Discovery
+
+### Implemented in Phase 4
+
+```text
+include/edgeflow/discovery/  HealthChecker  HealthState (HealthTracker, HealthPolicy)  Prober  NameResolver
+src/discovery/               matching implementations
+ServiceRegistry (Phase 3) gained: listInstances  lookupRoutable  updateHealth
+```
+
+```text
+registry.listInstances() --refresh--> one Monitor per instance to check
+Monitor timer --> Prober (TCP or HTTP, bounded by timeout) --> ProbeResult
+ProbeResult --> HealthTracker (thresholds) --on a transition--> registry.updateHealth()
+registry.lookupRoutable()  =  status active  AND  health healthy
+```
+
+| Component | Responsibility |
+|-----------|----------------|
+| `Prober` (`TcpProber`, `HttpProber`) | Executes ONE probe asynchronously on an `io_context` and reports a `ProbeResult`. Both kinds share one operation (resolve, connect, timeout, cancellation); HTTP adds the request and the response head. Knows nothing about instances or health state. |
+| `NameResolver` | Host-name lookups for probes, isolated per host (see below). |
+| `HealthTracker` | The state machine for one instance: pure and deterministic, no I/O. |
+| `HealthChecker` | Scheduling, discovery refresh and persistence. Owns a private `io_context` thread (timers and probes) and a one-thread pool for the blocking PostgreSQL calls. |
+| `ServiceRegistry` | Still the only store. The checker keeps per-instance runtime state (streak counters, timers), not a copy of the registry. |
+
+### Probe classification
+
+- **TCP:** healthy if and only if a TCP connection is established within `timeout_ms`. This proves that something accepts connections on that port; it says nothing about the application behind it.
+- **HTTP:** `GET <http_path>` with `Connection: close`. Healthy if and only if a complete status line and headers arrive within `timeout_ms` AND the status is **2xx**. Everything else is unhealthy: 1xx, 3xx (redirects are not followed), 4xx, 5xx, a malformed response, a connection closed before or during the response, a reset, an unresolvable name, a refusal, and a timeout. Only the response head is read, never the body.
+- **Bounded:** the timeout covers the WHOLE probe (resolve + connect + request + response head). On expiry every pending operation is cancelled. A stalled backend therefore costs one timeout, never a stuck checker.
+- **Name resolution is isolated.** Asio's own resolver runs `getaddrinfo()` one lookup at a time on a single background thread, so one lookup that hangs (for example the DNS name of a container that was just removed) would delay every other instance's lookup and make healthy instances time out. This was observed in Docker Compose during validation and is why `NameResolver` exists: each distinct host is looked up on its own thread, concurrent lookups of one host share a single lookup, at most 16 lookups run at once (beyond that a probe fails at once as unhealthy instead of queueing behind slow ones), and a cancelled or timed-out probe's lookup is never delivered, so a late result cannot reach a torn-down `io_context`. The lookup threads are detached because `getaddrinfo()` cannot be cancelled and shutdown must not wait for it. IP literals skip resolution.
+
+### State machine
+
+```text
+Unknown   --success--> Healthy      the first probe decides at once (no prior state to flap from)
+Unknown   --failure--> Unhealthy
+Healthy   --failure_threshold consecutive failures--> Unhealthy
+Unhealthy --success_threshold consecutive successes--> Healthy
+```
+
+A result in the opposite direction resets the streak, so a single transient failure cannot flip a settled instance (unless the threshold is 1). A transition starts a fresh streak. The state never returns to `unknown`; only a new registration starts there. Only transitions are written to PostgreSQL, so steady health causes no database writes. If a write fails (for example during an outage) the checker keeps its verdict and retries after the next probe; it never loops.
+
+### Registration status vs health status
+
+They stay separate. Registration status (`active`, `draining`, `disabled`) says whether an instance is meant to receive traffic; health says whether it works.
+
+| Registration status | Probed? | Routable? |
+|---|---|---|
+| `active` | yes | only while `healthy` |
+| `draining` | yes | never (its health is still tracked) |
+| `disabled` | no (last known health is kept) | never, however healthy |
+
+`lookupRoutable` (and `GET /services/{service}/routable`) is the neutral view Phase 5 will consume: `active AND healthy`, no ordering and no strategy. Plain discovery (`lookupService`) still returns everything. When health checking is on, the checker owns `health_status`: a value written by hand through `PATCH` is corrected by the next probe.
+
+### Discovery refresh
+
+Every `refresh_interval_ms` the checker re-reads the registry with one `listInstances()` query (not one per instance). A new instance is probed immediately, without an EdgeFlow restart; a deregistered or disabled instance is dropped and its pending probe cancelled; an instance whose `registered_at`, host or port changed (deregistered and registered again) starts over as a new instance and results computed for the old incarnation are discarded; `updateHealth` is additionally pinned to `registered_at` in the database, so a late result can never be written onto a newer instance. A failed refresh keeps the current instances and is logged once when it begins and once when it recovers.
+
+### Concurrency and shutdown
+
+- All checker state is confined to one thread, so it needs no locks. Blocking PostgreSQL calls run on a separate single-thread pool, so database latency never delays probing and no lock is held across I/O. Probes are limited to `max_concurrent_checks`; the rest wait in a queue.
+- Shutdown order: the HTTP server stops first, then `HealthChecker::stop()` posts a cancel-everything step onto its thread (timers, probes, queue), stops that thread, waits for an in-flight database call (bounded by the registry's own timeouts) and joins the pool. After it returns nothing runs; `stop()` is idempotent and concurrent callers all wait for completion.
+
+### Limitations
+
+One probe type applies to all instances (`health_check.type`); the instance model has no per-instance check settings. The routable view is a database query on each call: it is correct and always current but is not the cached, lock-light view that request-path routing may want (a Phase 5 concern, to be measured first).

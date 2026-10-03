@@ -4,9 +4,9 @@ EdgeFlow is a high-performance **API Gateway, Service Discovery system, and Load
 
 ## Current Status
 
-**Phases 1, 2 and 3 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that can discover registered backend instances (Phase 3).
+**Phases 1 to 4 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that discovers registered backend instances (Phase 3) and an **active health checker** that excludes unhealthy instances from the routable view and reintroduces recovered ones (Phase 4).
 
-It is **not yet a gateway**: it answers requests locally and manages the registry, but it does not forward traffic. It has no health checking of backends, load balancing, reverse proxying, caching, or rate limiting; those arrive in Phases 4-10. See [Phases.md](Phases.md).
+It is **not yet a gateway**: it answers requests locally and manages the registry, but it does not forward traffic. It has no load balancing, reverse proxying, caching, or rate limiting; those arrive in Phases 5-10. See [Phases.md](Phases.md).
 
 ## Implemented
 
@@ -34,9 +34,14 @@ It is **not yet a gateway**: it answers requests locally and manages the registr
 - JSON registry API under `/services` (see below); duplicates rejected, repeated deregistration reported, database outages reported as `503` instead of false success
 - Docker Compose stack with PostgreSQL (health-gated startup, named volume)
 
+**Phase 4 - health checking and dynamic discovery**
+- Periodic, timeout-bounded TCP and HTTP health checks of registered instances (HTTP healthy only on 2xx)
+- Explicit health state machine with failure and recovery thresholds; transitions persisted in PostgreSQL
+- Discovery refresh: new, deregistered, disabled and re-registered instances are handled without a restart
+- A neutral routable view (`active` AND `healthy`) via `GET /services/{service}/routable`, for the load balancer (Phase 5)
+
 ## Planned Capabilities (not yet implemented)
 
-- Active TCP/HTTP health checking of backends with automatic recovery
 - Load balancing: Round Robin, Least Connections, Weighted Routing, Consistent Hashing
 - Reverse proxy with connection pooling and request IDs
 - Retries with exponential backoff, circuit breaker, failover
@@ -126,6 +131,15 @@ The service registry is off by default, so this runs without a database. To use 
 | `database.password_env` | `EDGEFLOW_DB_PASSWORD` | env var name | NAME of the environment variable holding the password. The password itself can never be put in the configuration, and is never logged |
 | `database.pool_size` | `4` | 1-64 | database connections; each in-flight registry request holds one |
 | `database.connect_timeout_seconds` | `5` | 1-60 | time allowed to open a database connection |
+| `health_check.enabled` | `false` | true/false | turn active health checking on; requires `database.enabled` |
+| `health_check.type` | `tcp` | `tcp`, `http` | kind of probe |
+| `health_check.interval_ms` | `5000` | 100-3600000 | pause between the end of one probe of an instance and the start of the next |
+| `health_check.timeout_ms` | `2000` | 10-60000 | bound for one whole probe; must not exceed `interval_ms` |
+| `health_check.http_path` | `/health` | path | request path for `type: http` |
+| `health_check.failure_threshold` | `3` | 1-100 | consecutive failures before a healthy instance becomes unhealthy |
+| `health_check.success_threshold` | `2` | 1-100 | consecutive successes before an unhealthy instance becomes healthy |
+| `health_check.refresh_interval_ms` | `5000` | 100-3600000 | how often the registry is re-read for new, removed and disabled instances |
+| `health_check.max_concurrent_checks` | `32` | 1-1024 | probes running at the same time |
 | `shutdown.grace_period_seconds` | `5` | 0-300 | time in-flight requests get to finish on shutdown |
 
 ## Service Registry (Phase 3)
@@ -158,6 +172,7 @@ curl http://127.0.0.1:8080/services                                   # known se
 |-----------------|--------|
 | `POST /services/{service}/instances` | `201` + `Location`; body fields: `host`, `port` (required), `instance_id`, `version`, `weight` (0-1000, default 1), `status`, `health_status`, `connection_count` |
 | `GET /services/{service}/instances` | `200` `{"service","count","instances":[...]}`; `404` for a service that was never registered |
+| `GET /services/{service}/routable` | `200`, same shape as discovery but only instances that are `active` AND `healthy` (Phase 4); no ordering or selection |
 | `GET /services/{service}/instances/{id}` | `200` or `404` |
 | `PATCH /services/{service}/instances/{id}` | `200`; mutable fields only (`status`, `health_status`, `version`, `weight`, `connection_count`); `400` for identity fields |
 | `DELETE /services/{service}/instances/{id}` | `204`; `404` if already gone |
@@ -167,6 +182,36 @@ Errors are JSON (`{"error","status","detail"}`): `400` invalid input, `404` unkn
 
 Instance metadata: `status` is the registration state (`active`, `draining`, `disabled`); `health_status` is the last known health (`unknown`, `healthy`, `unhealthy`). They are separate things. In Phase 3 nothing probes instances, so health is whatever was registered or last written; active health checking is Phase 4. `weight` and `connection_count` are stored for the load balancer (Phase 5) and proxy (Phase 6) and are not acted on yet. Registering an id or `host:port` that already exists for the service is rejected with `409` rather than overwriting it. Design details, schema and failure behavior: [architecture.md](architecture.md) section 19.
 
+## Health Checking (Phase 4)
+
+EdgeFlow can actively probe the registered instances and keep their health up to date, so that discovery for routing automatically **excludes unhealthy instances and reintroduces recovered ones**. It is off by default; enable it with `health_check.enabled: true` (it needs `database.enabled`, because it reads instances from, and writes health to, the PostgreSQL registry). `docker compose` enables it.
+
+- **TCP check** (`type: tcp`, the default): healthy when a TCP connection is established within `timeout_ms`. This proves the port accepts connections, not that the application works.
+- **HTTP check** (`type: http`): `GET <http_path>` (default `/health`); healthy only on a **2xx** response within `timeout_ms`. Redirects are not followed; 1xx, 3xx, 4xx, 5xx, a malformed response, a closed or reset connection, an unresolvable name and a timeout are all unhealthy.
+- **State machine**: the first probe of a new instance decides at once (`unknown` to `healthy` or `unhealthy`). After that a healthy instance becomes unhealthy after `failure_threshold` consecutive failures, and an unhealthy one becomes healthy after `success_threshold` consecutive successes; a result in the other direction resets the streak, so one transient failure does not flap an instance.
+- **Registration vs health**: `active` and `draining` instances are probed, `disabled` ones are not. Only `active` AND `healthy` instances are routable.
+- **Discovery refresh**: every `refresh_interval_ms` the registry is re-read, so instances registered, deregistered, disabled or re-registered while EdgeFlow runs are picked up or dropped without a restart.
+- Health transitions are logged (`is now unhealthy` is a warning); each probe is bounded by `timeout_ms`; shutdown cancels everything.
+
+```bash
+curl http://127.0.0.1:8080/services/shop/routable       # only active AND healthy instances
+curl http://127.0.0.1:8080/services/shop/instances      # everything registered, with health_status
+```
+
+To try it locally with Docker, use two EdgeFlow containers as throwaway backends (the image answers `GET /health` with 200 on port 8080; its shipped configuration has no database):
+
+```bash
+docker compose up -d --build
+for n in a b; do
+  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase4
+  curl -X POST http://127.0.0.1:8080/services/shop/instances -H 'Content-Type: application/json'     -d "{\"instance_id\":\"$n\",\"host\":\"backend-$n\",\"port\":8080}"
+done
+curl http://127.0.0.1:8080/services/shop/routable      # within a few seconds: a and b
+docker stop backend-b                                  # after the failure threshold: only a
+docker start backend-b                                 # after the success threshold: a and b again
+docker rm -f backend-a backend-b; docker compose down -v
+```
+
 ## Testing
 
 ```bash
@@ -175,7 +220,7 @@ ctest --test-dir build --output-on-failure
 
 The suite covers configuration, logging, the shutdown coordinator, application lifecycle (including real SIGINT/SIGTERM), and the networking engine. Network tests are real integration tests: they start the server on an OS-assigned loopback port and talk to it over TCP, covering endpoints, parsing errors, limits, keep-alive and connection reuse, pipelining, idle and request timeouts, timer cancellation, client disconnects and resets, write failure, connection limits, graceful and forced shutdown, and 1/10/50/100 concurrent clients. These are correctness tests, not benchmarks.
 
-The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 30 tests that need a database are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
+The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 42 tests that need a database are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
 
 ## Docker
 
@@ -186,7 +231,7 @@ docker compose up --build                    # PostgreSQL + EdgeFlow with the re
 docker compose down
 ```
 
-Compose starts `postgres:16` with a health check and a named volume (`docker compose down` keeps your registrations, `down -v` deletes them) and starts EdgeFlow only once the database is healthy, using `config/config.compose.yaml`. The database password defaults to a development-only value; override it with `EDGEFLOW_DB_PASSWORD=... docker compose up` or an untracked `.env` file. The image build is bounded to 2 parallel compile jobs (`--build-arg BUILD_JOBS=N` to change it) because Beast is memory-hungry. The image runs as a non-root user and includes a `HEALTHCHECK` that runs `edgeflow --healthcheck` (so no curl is required). The container port must equal `server.port` in the configuration (8080 by default).
+Compose starts `postgres:16` with a health check and a named volume (`docker compose down` keeps your registrations, `down -v` deletes them) and starts EdgeFlow only once the database is healthy, using `config/config.compose.yaml`, which also enables health checking (HTTP `GET /health`, 2 s interval). The database password defaults to a development-only value; override it with `EDGEFLOW_DB_PASSWORD=... docker compose up` or an untracked `.env` file. The image build is bounded to 2 parallel compile jobs (`--build-arg BUILD_JOBS=N` to change it) because Beast is memory-hungry. The image runs as a non-root user and includes a `HEALTHCHECK` that runs `edgeflow --healthcheck` (so no curl is required). The container port must equal `server.port` in the configuration (8080 by default).
 
 ## CI
 
@@ -203,7 +248,7 @@ No benchmarks have been run, and no performance results exist yet. Load-testing 
 | 1 | Foundation & Core Infrastructure | Completed |
 | 2 | TCP/HTTP Networking Engine | Completed |
 | 3 | Service Discovery & Registry | Completed |
-| 4 | Health Checking & Dynamic Discovery | Not started |
+| 4 | Health Checking & Dynamic Discovery | Completed |
 | 5 | Load Balancing Engine | Not started |
 | 6 | Reverse Proxy & Request Forwarding | Not started |
 | 7 | Reliability Engineering | Not started |

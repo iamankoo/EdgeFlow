@@ -515,6 +515,106 @@ TEST_F(PostgresRegistryTest, RecoversAfterTheServerKillsItsConnection) {
   EXPECT_EQ(after.value().size(), 1U);
 }
 
+// --- Phase 4 registry additions ----------------------------------------------------------------
+
+TEST_F(PostgresRegistryTest, ListInstancesCoversEveryService) {
+  const auto a = newService("list-a");
+  const auto b = newService("list-b");
+  ASSERT_TRUE(registry->registerInstance(makeInstance(a, "10.0.0.1", 1)).ok());
+  ASSERT_TRUE(registry->registerInstance(makeInstance(a, "10.0.0.2", 1)).ok());
+  ASSERT_TRUE(registry->registerInstance(makeInstance(b, "10.0.0.1", 1)).ok());
+
+  const auto all = registry->listInstances();
+  ASSERT_TRUE(all.ok()) << all.error().message;
+  std::size_t in_a = 0;
+  std::size_t in_b = 0;
+  for (const auto& i : all.value()) {
+    EXPECT_FALSE(i.service.empty());
+    EXPECT_FALSE(i.instance_id.empty());
+    EXPECT_FALSE(i.registered_at.empty());
+    in_a += (i.service == a);
+    in_b += (i.service == b);
+  }
+  EXPECT_EQ(in_a, 2U);
+  EXPECT_EQ(in_b, 1U);
+}
+
+TEST_F(PostgresRegistryTest, RoutableMeansActiveAndHealthyAndNothingElse) {
+  const auto service = newService("routable");
+  const struct {
+    const char* id;
+    InstanceStatus status;
+    HealthStatus health;
+    bool routable;
+  } cases[] = {
+      {"active-healthy", InstanceStatus::Active, HealthStatus::Healthy, true},
+      {"active-unhealthy", InstanceStatus::Active, HealthStatus::Unhealthy, false},
+      {"active-unknown", InstanceStatus::Active, HealthStatus::Unknown, false},
+      {"draining-healthy", InstanceStatus::Draining, HealthStatus::Healthy, false},
+      {"disabled-healthy", InstanceStatus::Disabled, HealthStatus::Healthy, false},
+      {"disabled-unhealthy", InstanceStatus::Disabled, HealthStatus::Unhealthy, false},
+  };
+  std::uint16_t port = 9000;
+  for (const auto& c : cases) {
+    auto instance = makeInstance(service, "10.0.0.1", port++);
+    instance.instance_id = c.id;
+    instance.status = c.status;
+    instance.health = c.health;
+    ASSERT_TRUE(registry->registerInstance(instance).ok());
+  }
+  const auto routable = registry->lookupRoutable(service);
+  ASSERT_TRUE(routable.ok()) << routable.error().message;
+  std::set<std::string> ids;
+  for (const auto& i : routable.value()) ids.insert(i.instance_id);
+  std::set<std::string> expected;
+  for (const auto& c : cases) {
+    if (c.routable) expected.insert(c.id);
+  }
+  EXPECT_EQ(ids, expected);
+  EXPECT_EQ(registry->lookupService(service).value().size(), std::size(cases)) << "plain discovery still returns all";
+}
+
+TEST_F(PostgresRegistryTest, RoutableLookupErrors) {
+  const auto unknown = registry->lookupRoutable(newService());
+  ASSERT_FALSE(unknown.ok());
+  EXPECT_EQ(unknown.error().code, RegistryErrorCode::ServiceNotFound);
+
+  const auto service = newService();
+  ASSERT_TRUE(registry->registerInstance(makeInstance(service, "10.0.0.1", 9000)).ok());
+  const auto none = registry->lookupRoutable(service);
+  ASSERT_TRUE(none.ok()) << "known service, nothing routable: empty list, not an error";
+  EXPECT_TRUE(none.value().empty());
+
+  EXPECT_EQ(registry->lookupRoutable("Not Valid").error().code, RegistryErrorCode::InvalidArgument);
+}
+
+TEST_F(PostgresRegistryTest, UpdateHealthIsPinnedToOneIncarnation) {
+  const auto service = newService();
+  auto request = makeInstance(service, "10.0.0.1", 9000);
+  request.instance_id = "h";
+  const auto first = registry->registerInstance(request);
+  ASSERT_TRUE(first.ok());
+
+  const auto set = registry->updateHealth(service, "h", first.value().registered_at, HealthStatus::Healthy);
+  ASSERT_TRUE(set.ok()) << set.error().message;
+  EXPECT_EQ(set.value().health, HealthStatus::Healthy);
+  EXPECT_EQ(set.value().version, first.value().version) << "only the health changed";
+  EXPECT_EQ(registry->updateHealth(service, "h", first.value().registered_at, HealthStatus::Healthy).ok(), true)
+      << "idempotent";
+
+  ASSERT_TRUE(registry->deregisterInstance(service, "h").ok());
+  auto moved = makeInstance(service, "10.0.0.9", 9009);
+  moved.instance_id = "h";
+  ASSERT_TRUE(registry->registerInstance(moved).ok());
+  const auto stale = registry->updateHealth(service, "h", first.value().registered_at, HealthStatus::Unhealthy);
+  ASSERT_FALSE(stale.ok());
+  EXPECT_EQ(stale.error().code, RegistryErrorCode::InstanceNotFound);
+  EXPECT_EQ(registry->getInstance(service, "h").value().health, HealthStatus::Unknown);
+
+  EXPECT_EQ(registry->updateHealth(newService(), "h", first.value().registered_at, HealthStatus::Healthy).error().code,
+            RegistryErrorCode::InstanceNotFound);
+}
+
 // --- database unavailable (no PostgreSQL needed) -------------------------------------------
 
 TEST(PostgresRegistryUnavailableTest, EveryOperationReportsFailureRatherThanSuccess) {
@@ -534,6 +634,9 @@ TEST(PostgresRegistryUnavailableTest, EveryOperationReportsFailureRatherThanSucc
   update.weight = 1;
   EXPECT_TRUE(isUnavailable(registry.updateInstance("svc", "a", update)));
   EXPECT_TRUE(isUnavailable(registry.adjustConnectionCount("svc", "a", 1)));
+  EXPECT_TRUE(isUnavailable(registry.listInstances()));
+  EXPECT_TRUE(isUnavailable(registry.lookupRoutable("svc")));
+  EXPECT_TRUE(isUnavailable(registry.updateHealth("svc", "a", "2026-01-01T00:00:00Z", HealthStatus::Healthy)));
   EXPECT_TRUE(log.contains("database connection failed"));
 }
 

@@ -18,8 +18,8 @@ namespace edgeflow::discovery {
 // id: exactly one wins, the other gets DuplicateInstance).
 //
 // Connection loss: a pooled connection can be closed by the server between the pool's
-// health check and its use (restart, failover). Reads (lookup, get, list) are idempotent
-// and are retried once on a fresh connection. Writes are never retried: after a lost
+// health check and its use (restart, failover). Reads (lookup, get, list) and the
+// idempotent updateHealth are retried once on a fresh connection. Writes are never retried: after a lost
 // connection it is unknown whether they committed, so they report DatabaseUnavailable
 // and the caller decides.
 //
@@ -40,6 +40,13 @@ class PostgresServiceRegistry final : public ServiceRegistry {
   [[nodiscard]] Result<ServiceInstance> updateInstance(std::string_view service,
                                                        std::string_view instance_id,
                                                        const InstanceUpdate& update) override;
+  [[nodiscard]] Result<std::vector<ServiceInstance>> listInstances() override;
+  [[nodiscard]] Result<std::vector<ServiceInstance>> lookupRoutable(
+      std::string_view service) override;
+  [[nodiscard]] Result<ServiceInstance> updateHealth(std::string_view service,
+                                                     std::string_view instance_id,
+                                                     std::string_view registered_at,
+                                                     HealthStatus health) override;
   [[nodiscard]] Result<ServiceInstance> adjustConnectionCount(std::string_view service,
                                                               std::string_view instance_id,
                                                               std::int64_t delta) override;
@@ -49,6 +56,12 @@ class PostgresServiceRegistry final : public ServiceRegistry {
   [[nodiscard]] Result<ServiceInstance> getInstanceOnce(std::string_view service,
                                                         std::string_view instance_id);
   [[nodiscard]] Result<std::vector<std::string>> listServicesOnce();
+  [[nodiscard]] Result<std::vector<ServiceInstance>> listInstancesOnce();
+  [[nodiscard]] Result<std::vector<ServiceInstance>> lookupRoutableOnce(std::string_view service);
+  [[nodiscard]] Result<ServiceInstance> updateHealthOnce(std::string_view service,
+                                                         std::string_view instance_id,
+                                                         std::string_view registered_at,
+                                                         HealthStatus health);
 
   std::shared_ptr<storage::PgPool> pool_;
   std::shared_ptr<logging::Logger> logger_;

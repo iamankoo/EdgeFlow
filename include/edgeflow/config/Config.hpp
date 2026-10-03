@@ -46,6 +46,30 @@ struct DatabaseConfig {
   std::chrono::seconds connect_timeout{5};
 };
 
+enum class HealthCheckType { Tcp, Http };
+
+// Active health checking of registered service instances (Phase 4). Requires the service
+// registry (`database.enabled`): it reads the instances from it and writes health back.
+struct HealthCheckConfig {
+  bool enabled{false};
+  HealthCheckType type{HealthCheckType::Tcp};
+  // Pause between the end of one probe of an instance and the start of the next.
+  std::chrono::milliseconds interval{5000};
+  // Upper bound for one whole probe (resolve + connect + request + response). Must not
+  // exceed `interval`.
+  std::chrono::milliseconds timeout{2000};
+  std::string http_path{"/health"};  // used by the http type
+  // Consecutive failed probes before a healthy instance becomes unhealthy.
+  unsigned failure_threshold{3};
+  // Consecutive successful probes before an unhealthy instance becomes healthy again.
+  unsigned success_threshold{2};
+  // How often the registry is re-read to notice added, removed, changed and disabled
+  // instances.
+  std::chrono::milliseconds refresh_interval{5000};
+  // Upper bound for probes running at the same time.
+  unsigned max_concurrent_checks{32};
+};
+
 struct ShutdownConfig {
   std::chrono::seconds grace_period{5};
 };
@@ -54,10 +78,12 @@ struct Config {
   ApplicationConfig application;
   ServerConfig server;
   DatabaseConfig database;
+  HealthCheckConfig health_check;
   ShutdownConfig shutdown;
 };
 
 [[nodiscard]] std::string_view toString(Environment environment) noexcept;
 [[nodiscard]] std::string_view toString(LogLevel level) noexcept;
+[[nodiscard]] std::string_view toString(HealthCheckType type) noexcept;
 
 }  // namespace edgeflow::config

@@ -314,4 +314,82 @@ TEST(ConfigManagerDatabaseTest, ShippedConfigurationsParse) {
   EXPECT_EQ(compose.config().database.host, "postgres");
 }
 
+TEST(ConfigManagerHealthCheckTest, DefaultsAreOffAndSafe) {
+  ConfigManager manager;
+  ASSERT_TRUE(manager.loadFromString("server:\n  port: 8080\n"));
+  const auto& hc = manager.config().health_check;
+  EXPECT_FALSE(hc.enabled) << "Phase 2 and 3 configurations keep working";
+  EXPECT_EQ(hc.type, edgeflow::config::HealthCheckType::Tcp);
+  EXPECT_EQ(hc.interval, std::chrono::milliseconds{5000});
+  EXPECT_EQ(hc.timeout, std::chrono::milliseconds{2000});
+  EXPECT_EQ(hc.http_path, "/health");
+  EXPECT_EQ(hc.failure_threshold, 3U);
+  EXPECT_EQ(hc.success_threshold, 2U);
+  EXPECT_EQ(hc.refresh_interval, std::chrono::milliseconds{5000});
+  EXPECT_EQ(hc.max_concurrent_checks, 32U);
+}
+
+TEST(ConfigManagerHealthCheckTest, ParsesEveryKey) {
+  ConfigManager manager;
+  ASSERT_TRUE(manager.loadFromString(
+      "database:\n  enabled: true\n"
+      "health_check:\n  enabled: true\n  type: http\n  interval_ms: 1500\n  timeout_ms: 700\n"
+      "  http_path: /internal/ready?deep=1\n  failure_threshold: 4\n  success_threshold: 5\n"
+      "  refresh_interval_ms: 900\n  max_concurrent_checks: 7\n"));
+  const auto& hc = manager.config().health_check;
+  EXPECT_TRUE(hc.enabled);
+  EXPECT_EQ(hc.type, edgeflow::config::HealthCheckType::Http);
+  EXPECT_EQ(hc.interval, std::chrono::milliseconds{1500});
+  EXPECT_EQ(hc.timeout, std::chrono::milliseconds{700});
+  EXPECT_EQ(hc.http_path, "/internal/ready?deep=1");
+  EXPECT_EQ(hc.failure_threshold, 4U);
+  EXPECT_EQ(hc.success_threshold, 5U);
+  EXPECT_EQ(hc.refresh_interval, std::chrono::milliseconds{900});
+  EXPECT_EQ(hc.max_concurrent_checks, 7U);
+}
+
+TEST(ConfigManagerHealthCheckTest, RejectsUnknownKeysAndInvalidValues) {
+  ConfigManager unknown;
+  EXPECT_FALSE(unknown.loadFromString("health_check:\n  intervall_ms: 5\n"));
+  EXPECT_TRUE(anyErrorContains(unknown, "unknown key 'health_check.intervall_ms'"));
+
+  for (const char* bad : {"enabled: sometimes", "type: udp", "type: 5", "interval_ms: 99", "interval_ms: 3600001",
+                          "timeout_ms: 9", "timeout_ms: 60001", "failure_threshold: 0", "failure_threshold: 101",
+                          "success_threshold: 0", "success_threshold: 101", "refresh_interval_ms: 99",
+                          "max_concurrent_checks: 0", "max_concurrent_checks: 1025", "http_path: health",
+                          "http_path: ''", "http_path: '/has space'", "http_path: '/frag#ment'",
+                          "interval_ms: soon"}) {
+    ConfigManager manager;
+    EXPECT_FALSE(manager.loadFromString(std::string{"health_check:\n  "} + bad + "\n")) << bad;
+    EXPECT_TRUE(anyErrorContains(manager, "health_check.")) << bad;
+  }
+}
+
+TEST(ConfigManagerHealthCheckTest, TimeoutMayNotExceedTheInterval) {
+  ConfigManager manager;
+  EXPECT_FALSE(manager.loadFromString("health_check:\n  interval_ms: 1000\n  timeout_ms: 1500\n"));
+  EXPECT_TRUE(anyErrorContains(manager, "'health_check.timeout_ms' (1500) must not exceed 'health_check.interval_ms' (1000)"));
+  ConfigManager equal;
+  EXPECT_TRUE(equal.loadFromString("health_check:\n  interval_ms: 1000\n  timeout_ms: 1000\n"));
+}
+
+TEST(ConfigManagerHealthCheckTest, HealthCheckingRequiresTheRegistry) {
+  ConfigManager manager;
+  EXPECT_FALSE(manager.loadFromString("health_check:\n  enabled: true\n"));
+  EXPECT_TRUE(anyErrorContains(manager, "'health_check.enabled' requires 'database.enabled'"));
+  ConfigManager both;
+  EXPECT_TRUE(both.loadFromString("database:\n  enabled: true\nhealth_check:\n  enabled: true\n"));
+  ConfigManager disabled;
+  EXPECT_TRUE(disabled.loadFromString("health_check:\n  enabled: false\n")) << "a disabled section needs no database";
+}
+
+TEST(ConfigManagerHealthCheckTest, ComposeConfigurationEnablesHealthChecking) {
+  ConfigManager compose;
+  ASSERT_TRUE(compose.load(std::filesystem::path{EDGEFLOW_DEFAULT_CONFIG}.parent_path() / "config.compose.yaml"));
+  EXPECT_TRUE(compose.config().health_check.enabled);
+  ConfigManager shipped;
+  ASSERT_TRUE(shipped.load(std::filesystem::path{EDGEFLOW_DEFAULT_CONFIG}));
+  EXPECT_FALSE(shipped.config().health_check.enabled);
+}
+
 }  // namespace

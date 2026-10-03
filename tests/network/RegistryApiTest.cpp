@@ -238,6 +238,38 @@ TEST_F(RegistryApiTest, QueryStringsDoNotAffectRouting) {
   EXPECT_EQ(client.get("/services/svc/instances?x=1")->result(), http::status::ok);
 }
 
+TEST_F(RegistryApiTest, RoutableViewShowsOnlyActiveAndHealthyInstances) {
+  ASSERT_TRUE(post("svc", {{"instance_id", "ok"}, {"host", "10.0.0.1"}, {"port", 1}, {"health_status", "healthy"}}));
+  ASSERT_TRUE(post("svc", {{"instance_id", "sick"}, {"host", "10.0.0.2"}, {"port", 1}, {"health_status", "unhealthy"}}));
+  ASSERT_TRUE(post("svc", {{"instance_id", "new"}, {"host", "10.0.0.3"}, {"port", 1}}));
+  ASSERT_TRUE(post("svc", {{"instance_id", "drain"}, {"host", "10.0.0.4"}, {"port", 1}, {"health_status", "healthy"}, {"status", "draining"}}));
+
+  const auto routable = client.get("/services/svc/routable");
+  ASSERT_TRUE(routable);
+  EXPECT_EQ(routable->result(), http::status::ok);
+  const auto body = bodyOf(routable);
+  EXPECT_EQ(body["count"], 1);
+  EXPECT_EQ(body["instances"][0]["instance_id"], "ok");
+  EXPECT_EQ(bodyOf(client.get("/services/svc/instances"))["count"], 4) << "plain discovery is unfiltered";
+
+  // The instance recovers: it becomes routable.
+  ASSERT_EQ(client.request(http::verb::patch, "/services/svc/instances/sick", R"({"health_status":"healthy"})")->result(),
+            http::status::ok);
+  EXPECT_EQ(bodyOf(client.get("/services/svc/routable"))["count"], 2);
+}
+
+TEST_F(RegistryApiTest, RoutableViewErrors) {
+  EXPECT_EQ(client.get("/services/nope/routable")->result(), http::status::not_found);
+  EXPECT_EQ(client.get("/services/Bad_Name/routable")->result(), http::status::bad_request);
+  const auto wrong = client.request(http::verb::post, "/services/svc/routable", "{}");
+  EXPECT_EQ(wrong->result(), http::status::method_not_allowed);
+  EXPECT_EQ((*wrong)[http::field::allow], "GET");
+  ASSERT_TRUE(post("svc", {{"host", "10.0.0.1"}, {"port", 1}}));
+  const auto empty = client.get("/services/svc/routable");
+  EXPECT_EQ(empty->result(), http::status::ok);
+  EXPECT_EQ(bodyOf(empty)["count"], 0) << "a known service with nothing routable is an empty list";
+}
+
 TEST_F(RegistryApiTest, Phase2EndpointsAreUnchanged) {
   const auto health = client.get("/health");
   ASSERT_TRUE(health);

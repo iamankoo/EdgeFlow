@@ -26,6 +26,13 @@ constexpr long long kMaxHeaderBytes = 65536;
 constexpr long long kMaxConnections = 100000;
 constexpr long long kMaxWorkerThreads = 64;
 constexpr long long kMaxPoolSize = 64;
+constexpr long long kMinIntervalMs = 100;
+constexpr long long kMaxIntervalMs = 3600000;
+constexpr long long kMinProbeTimeoutMs = 10;
+constexpr long long kMaxProbeTimeoutMs = 60000;
+constexpr long long kMaxThreshold = 100;
+constexpr long long kMaxConcurrentChecks = 1024;
+constexpr std::size_t kMaxHttpPathLength = 256;
 constexpr long long kMaxConnectTimeoutSeconds = 60;
 
 using Errors = std::vector<std::string>;
@@ -271,6 +278,80 @@ void parseDatabase(const YAML::Node& root, DatabaseConfig& out, Errors& errors) 
   }
 }
 
+bool isValidHttpPath(const std::string& path) {
+  if (path.empty() || path.size() > kMaxHttpPathLength || path.front() != '/') return false;
+  // Visible ASCII only, no '#': the path is sent verbatim in a request line.
+  return std::all_of(path.begin(), path.end(), [](unsigned char c) {
+    return c > 0x20 && c < 0x7f && c != '#';
+  });
+}
+
+void parseHealthCheck(const YAML::Node& root, HealthCheckConfig& out, Errors& errors) {
+  const YAML::Node section = sectionOf(root, "health_check", errors);
+  rejectUnknownKeys(section, "health_check",
+                    {"enabled", "type", "interval_ms", "timeout_ms", "http_path",
+                     "failure_threshold", "success_threshold", "refresh_interval_ms",
+                     "max_concurrent_checks"},
+                    errors);
+
+  if (auto enabled = readString(section, "health_check", "enabled", errors)) {
+    if (*enabled == "true") {
+      out.enabled = true;
+    } else if (*enabled == "false") {
+      out.enabled = false;
+    } else {
+      errors.push_back("'health_check.enabled' must be true or false (got '" + *enabled + "')");
+    }
+  }
+  if (auto type = readString(section, "health_check", "type", errors)) {
+    if (*type == "tcp") {
+      out.type = HealthCheckType::Tcp;
+    } else if (*type == "http") {
+      out.type = HealthCheckType::Http;
+    } else {
+      errors.push_back("'health_check.type' must be tcp or http (got '" + *type + "')");
+    }
+  }
+  if (auto v = readBounded(section, "health_check", "interval_ms", kMinIntervalMs, kMaxIntervalMs,
+                           errors)) {
+    out.interval = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(section, "health_check", "timeout_ms", kMinProbeTimeoutMs,
+                           kMaxProbeTimeoutMs, errors)) {
+    out.timeout = std::chrono::milliseconds{*v};
+  }
+  if (auto path = readString(section, "health_check", "http_path", errors)) {
+    if (isValidHttpPath(*path)) {
+      out.http_path = *path;
+    } else {
+      errors.push_back("'health_check.http_path' must start with '/' and contain only visible "
+                       "ASCII characters without '#' (at most " +
+                       std::to_string(kMaxHttpPathLength) + ")");
+    }
+  }
+  if (auto v = readBounded(section, "health_check", "failure_threshold", 1, kMaxThreshold,
+                           errors)) {
+    out.failure_threshold = static_cast<unsigned>(*v);
+  }
+  if (auto v = readBounded(section, "health_check", "success_threshold", 1, kMaxThreshold,
+                           errors)) {
+    out.success_threshold = static_cast<unsigned>(*v);
+  }
+  if (auto v = readBounded(section, "health_check", "refresh_interval_ms", kMinIntervalMs,
+                           kMaxIntervalMs, errors)) {
+    out.refresh_interval = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(section, "health_check", "max_concurrent_checks", 1,
+                           kMaxConcurrentChecks, errors)) {
+    out.max_concurrent_checks = static_cast<unsigned>(*v);
+  }
+  if (out.timeout > out.interval) {
+    errors.push_back("'health_check.timeout_ms' (" + std::to_string(out.timeout.count()) +
+                     ") must not exceed 'health_check.interval_ms' (" +
+                     std::to_string(out.interval.count()) + ")");
+  }
+}
+
 void parseShutdown(const YAML::Node& root, ShutdownConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "shutdown", errors);
   rejectUnknownKeys(section, "shutdown", {"grace_period_seconds"}, errors);
@@ -340,10 +421,15 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
 
   Config parsed;
   Errors errors;
-  rejectUnknownKeys(root, "", {"application", "server", "database", "shutdown"}, errors);
+  rejectUnknownKeys(root, "", {"application", "server", "database", "health_check", "shutdown"}, errors);
   parseApplication(root, parsed.application, errors);
   parseServer(root, parsed.server, errors);
   parseDatabase(root, parsed.database, errors);
+  parseHealthCheck(root, parsed.health_check, errors);
+  if (parsed.health_check.enabled && !parsed.database.enabled) {
+    errors.push_back("'health_check.enabled' requires 'database.enabled': health checking reads "
+                     "instances from, and writes health to, the service registry");
+  }
   parseShutdown(root, parsed.shutdown, errors);
 
   if (!errors.empty()) {
@@ -361,6 +447,14 @@ std::string_view toString(Environment environment) noexcept {
     case Environment::Production: return "production";
   }
   return "unknown";
+}
+
+std::string_view toString(HealthCheckType type) noexcept {
+  switch (type) {
+    case HealthCheckType::Tcp: return "tcp";
+    case HealthCheckType::Http: return "http";
+  }
+  return "tcp";
 }
 
 std::string_view toString(LogLevel level) noexcept {

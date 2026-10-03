@@ -347,6 +347,111 @@ Result<ServiceInstance> PostgresServiceRegistry::updateInstance(std::string_view
   return stored;
 }
 
+Result<std::vector<ServiceInstance>> PostgresServiceRegistry::listInstances() {
+  return retryOnceIfConnectionLost<std::vector<ServiceInstance>>(
+      *logger_, "list instances", [&] { return listInstancesOnce(); });
+}
+
+Result<std::vector<ServiceInstance>> PostgresServiceRegistry::lookupRoutable(
+    std::string_view service) {
+  return retryOnceIfConnectionLost<std::vector<ServiceInstance>>(
+      *logger_, "routable lookup", [&] { return lookupRoutableOnce(service); });
+}
+
+Result<ServiceInstance> PostgresServiceRegistry::updateHealth(std::string_view service,
+                                                              std::string_view instance_id,
+                                                              std::string_view registered_at,
+                                                              HealthStatus health) {
+  return retryOnceIfConnectionLost<ServiceInstance>(*logger_, "health update", [&] {
+    return updateHealthOnce(service, instance_id, registered_at, health);
+  });
+}
+
+Result<std::vector<ServiceInstance>> PostgresServiceRegistry::listInstancesOnce() {
+  auto lease = pool_->acquire();
+  if (!lease) return unavailable(*logger_, "list instances", lease.error());
+
+  // One statement for the whole registry: no per-service or per-instance queries.
+  const auto result = lease->exec(
+      "SELECT s.name, " EDGEFLOW_INSTANCE_COLUMNS " FROM service_instances i "
+      "JOIN services s ON s.id = i.service_id "
+      "ORDER BY s.name, i.registered_at, i.instance_id");
+  if (!result.ok()) return toRegistryError(result, *lease, *logger_, "list instances");
+
+  std::vector<ServiceInstance> instances;
+  instances.reserve(static_cast<std::size_t>(result.rows()));
+  for (int row = 0; row < result.rows(); ++row) {
+    ServiceInstance instance;
+    if (!readInstance(result, row, 1, result.text(row, 0), instance)) {
+      return badRow(*logger_, "list instances");
+    }
+    instances.push_back(std::move(instance));
+  }
+  return instances;
+}
+
+Result<std::vector<ServiceInstance>> PostgresServiceRegistry::lookupRoutableOnce(
+    std::string_view service) {
+  if (auto invalid = validateServiceName(service)) {
+    return {RegistryErrorCode::InvalidArgument, *invalid};
+  }
+  auto lease = pool_->acquire();
+  if (!lease) return unavailable(*logger_, "routable lookup", lease.error());
+
+  // Same shape as lookupService, with the routing rule in the join condition so that a
+  // known service with nothing routable still yields its (NULL) row.
+  const auto result = lease->exec(
+      "SELECT s.id, " EDGEFLOW_INSTANCE_COLUMNS " FROM services s "
+      "LEFT JOIN service_instances i ON i.service_id = s.id "
+      "  AND i.status = 'active' AND i.health_status = 'healthy' "
+      "WHERE s.name = $1 ORDER BY i.registered_at, i.instance_id",
+      {PgParam{std::string{service}}});
+  if (!result.ok()) return toRegistryError(result, *lease, *logger_, "routable lookup");
+  if (result.rows() == 0) return {RegistryErrorCode::ServiceNotFound, "service not found"};
+
+  std::vector<ServiceInstance> instances;
+  for (int row = 0; row < result.rows(); ++row) {
+    if (result.isNull(row, 1)) continue;
+    ServiceInstance instance;
+    if (!readInstance(result, row, 1, service, instance)) {
+      return badRow(*logger_, "routable lookup");
+    }
+    instances.push_back(std::move(instance));
+  }
+  return instances;
+}
+
+Result<ServiceInstance> PostgresServiceRegistry::updateHealthOnce(std::string_view service,
+                                                                  std::string_view instance_id,
+                                                                  std::string_view registered_at,
+                                                                  HealthStatus health) {
+  if (auto invalid = validateServiceName(service)) {
+    return {RegistryErrorCode::InvalidArgument, *invalid};
+  }
+  if (auto invalid = validateInstanceId(instance_id)) {
+    return {RegistryErrorCode::InvalidArgument, *invalid};
+  }
+  auto lease = pool_->acquire();
+  if (!lease) return unavailable(*logger_, "health update", lease.error());
+
+  // The registered_at match pins the update to one incarnation of the instance.
+  const auto result = lease->exec(
+      "UPDATE service_instances i SET health_status = $4::text, updated_at = now() "
+      "FROM services s WHERE s.id = i.service_id AND s.name = $1 AND i.instance_id = $2 "
+      "AND i.registered_at = $3::timestamptz "
+      "RETURNING " EDGEFLOW_INSTANCE_COLUMNS,
+      {PgParam{std::string{service}}, PgParam{std::string{instance_id}},
+       PgParam{std::string{registered_at}}, PgParam{std::string{toString(health)}}});
+  if (!result.ok()) return toRegistryError(result, *lease, *logger_, "health update");
+  if (result.rows() == 0) {
+    // Gone, or re-registered since the caller read it: either way not the same instance.
+    return {RegistryErrorCode::InstanceNotFound, "instance not found (or re-registered)"};
+  }
+  ServiceInstance stored;
+  if (!readInstance(result, 0, 0, service, stored)) return badRow(*logger_, "health update");
+  return stored;
+}
+
 Result<ServiceInstance> PostgresServiceRegistry::adjustConnectionCount(
     std::string_view service, std::string_view instance_id, std::int64_t delta) {
   if (auto invalid = validateServiceName(service)) {

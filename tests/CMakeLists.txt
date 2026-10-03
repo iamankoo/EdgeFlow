@@ -5,7 +5,12 @@ add_executable(edgeflow_tests
   core/ApplicationTest.cpp
   core/CommandLineTest.cpp
   core/ShutdownCoordinatorTest.cpp
+  discovery/HealthCheckerPostgresTest.cpp
+  discovery/HealthCheckerTest.cpp
+  discovery/HealthStateTest.cpp
+  discovery/NameResolverTest.cpp
   discovery/PostgresServiceRegistryTest.cpp
+  discovery/ProberTest.cpp
   discovery/ValidationTest.cpp
   logging/LoggerTest.cpp
   network/HealthProbeTest.cpp

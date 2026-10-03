@@ -31,7 +31,11 @@ add_library(edgeflow_core STATIC
   core/CommandLine.cpp
   core/ShutdownCoordinator.cpp
   core/SignalHandler.cpp
+  discovery/HealthChecker.cpp
+  discovery/HealthState.cpp
+  discovery/NameResolver.cpp
   discovery/PostgresServiceRegistry.cpp
+  discovery/Prober.cpp
   discovery/ServiceInstance.cpp
   discovery/Validation.cpp
   logging/Logger.cpp

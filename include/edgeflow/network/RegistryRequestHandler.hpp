@@ -15,6 +15,8 @@ namespace edgeflow::network {
 //   GET    /services                                  list service names
 //   POST   /services/{service}/instances              register   -> 201 + Location
 //   GET    /services/{service}/instances              discover   -> 200 (404 unknown service)
+//   GET    /services/{service}/routable               only instances routing may use:
+//                                                      active AND healthy (Phase 4)
 //   GET    /services/{service}/instances/{instance}   one instance
 //   PATCH  /services/{service}/instances/{instance}   update mutable metadata
 //   DELETE /services/{service}/instances/{instance}   deregister -> 204

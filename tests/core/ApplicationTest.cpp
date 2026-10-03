@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "edgeflow/core/Application.hpp"
+#include "support/HealthTestSupport.hpp"
 #include "support/NetTestSupport.hpp"
 #include "support/PgTestSupport.hpp"
 
@@ -356,6 +357,77 @@ TEST(ApplicationRegistryTest, ServesTheRegistryApiBackedByPostgres) {
             http::status::no_content);
   app.shutdown();
   EXPECT_TRUE(log.contains("shutdown completed"));
+}
+
+TEST(ApplicationHealthCheckTest, NotStartedUnlessEnabled) {
+  CapturedLogger log;
+  Application app(testConfig(), log.logger(), kNoSignals);
+  ASSERT_TRUE(app.initialize());
+  EXPECT_EQ(app.healthChecker(), nullptr);
+  EXPECT_FALSE(log.contains("health checker started"));
+}
+
+TEST(ApplicationHealthCheckTest, EnabledWithoutARegistryIsReportedNotSilentlyIgnored) {
+  CapturedLogger log;
+  auto config = testConfig();
+  config.health_check.enabled = true;  // bypasses ConfigManager, so there is no database
+  Application app(config, log.logger(), kNoSignals);
+  ASSERT_TRUE(app.initialize());
+  EXPECT_EQ(app.healthChecker(), nullptr);
+  EXPECT_TRUE(log.contains("health checking is enabled but there is no service registry"));
+}
+
+TEST(ApplicationHealthCheckTest, RunsAgainstPostgresAndStopsBeforeShutdownCompletes) {
+  EDGEFLOW_REQUIRE_TEST_DATABASE();
+  CapturedLogger log;
+  auto config = testConfig();
+  config.database.enabled = true;
+  config.database.host = test_db_params->host;
+  config.database.port = test_db_params->port;
+  config.database.name = test_db_params->database;
+  config.database.user = test_db_params->user;
+  config.database.password_env = "EDGEFLOW_TEST_DB_PASSWORD";
+  config.health_check.enabled = true;
+  config.health_check.interval = std::chrono::milliseconds{50};
+  config.health_check.timeout = std::chrono::milliseconds{200};
+  config.health_check.refresh_interval = std::chrono::milliseconds{50};
+  config.health_check.failure_threshold = 2;
+  config.health_check.success_threshold = 2;
+  Application app(config, log.logger(), kNoSignals);
+  ASSERT_TRUE(app.initialize()) << log.output();
+  ASSERT_NE(app.healthChecker(), nullptr);
+  EXPECT_TRUE(log.contains("health checker started"));
+
+  const std::string service = edgeflow::testing::uniqueName("apphc");
+  edgeflow::testing::RawServer backend_server(edgeflow::testing::RawServer::Mode::Close);
+  TestClient client(app.httpPort());
+  const auto created = client.request(
+      http::verb::post, "/services/" + service + "/instances",
+      R"({"instance_id":"a","host":"127.0.0.1","port":)" + std::to_string(backend_server.port()) + "}");
+  ASSERT_TRUE(created);
+  ASSERT_EQ(created->result(), http::status::created);
+
+  ASSERT_TRUE(edgeflow::testing::waitFor([&] {
+    const auto routable = client.get("/services/" + service + "/routable");
+    return routable && routable->body().find("\"count\":1") != std::string::npos;
+  })) << "the new instance became routable through the running application";
+
+  backend_server.stop();
+  ASSERT_TRUE(edgeflow::testing::waitFor([&] {
+    const auto routable = client.get("/services/" + service + "/routable");
+    return routable && routable->body().find("\"count\":0") != std::string::npos;
+  })) << "and is excluded when its backend disappears";
+
+  EXPECT_EQ(client.request(http::verb::delete_, "/services/" + service + "/instances/a")->result(),
+            http::status::no_content);
+  app.shutdown();
+  const auto http_stopped = log.position("HTTP server stopped");
+  const auto checker_stopped = log.position("health checker stopped");
+  const auto completed = log.position("shutdown completed");
+  ASSERT_NE(http_stopped, std::string::npos);
+  ASSERT_NE(checker_stopped, std::string::npos);
+  EXPECT_LT(http_stopped, checker_stopped) << "the HTTP server stops first";
+  EXPECT_LT(checker_stopped, completed);
 }
 
 }  // namespace

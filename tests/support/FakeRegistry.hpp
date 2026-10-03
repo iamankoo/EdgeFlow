@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdio>
 #include <map>
 #include <mutex>
 #include <string>
@@ -40,7 +41,10 @@ class FakeRegistry final : public discovery::ServiceRegistry {
     stored.version = instance.version;
     stored.weight = instance.weight;
     stored.connection_count = instance.connection_count;
-    stored.registered_at = stored.updated_at = "2026-01-01T00:00:00.000000Z";
+    // Distinct per registration, like the database's timestamp: it identifies the incarnation.
+    char stamp[48];
+    std::snprintf(stamp, sizeof(stamp), "2026-01-01T00:00:00.%06dZ", ++registrations_);
+    stored.registered_at = stored.updated_at = stamp;
     list.push_back(stored);
     return stored;
   }
@@ -109,6 +113,60 @@ class FakeRegistry final : public discovery::ServiceRegistry {
     return {Code::InstanceNotFound, "instance not found"};
   }
 
+  discovery::Result<std::vector<discovery::ServiceInstance>> listInstances() override {
+    const std::lock_guard lock(mutex_);
+    if (unavailable_) return {Code::DatabaseUnavailable, "the database is unavailable"};
+    std::vector<discovery::ServiceInstance> all;
+    for (const auto& [name, list] : services_) {
+      (void)name;
+      all.insert(all.end(), list.begin(), list.end());
+    }
+    return all;
+  }
+
+  discovery::Result<std::vector<discovery::ServiceInstance>> lookupRoutable(
+      std::string_view service) override {
+    if (auto invalid = discovery::validateServiceName(service)) return {Code::InvalidArgument, *invalid};
+    const std::lock_guard lock(mutex_);
+    const auto it = services_.find(std::string{service});
+    if (it == services_.end()) return {Code::ServiceNotFound, "service not found"};
+    std::vector<discovery::ServiceInstance> routable;
+    for (const auto& i : it->second) {
+      if (i.status == discovery::InstanceStatus::Active && i.health == discovery::HealthStatus::Healthy) {
+        routable.push_back(i);
+      }
+    }
+    return routable;
+  }
+
+  discovery::Result<discovery::ServiceInstance> updateHealth(
+      std::string_view service, std::string_view instance_id, std::string_view registered_at,
+      discovery::HealthStatus health) override {
+    const std::lock_guard lock(mutex_);
+    ++health_updates_;
+    if (unavailable_) return {Code::DatabaseUnavailable, "the database is unavailable"};
+    const auto it = services_.find(std::string{service});
+    if (it == services_.end()) return {Code::ServiceNotFound, "service not found"};
+    for (auto& i : it->second) {
+      if (i.instance_id != instance_id || i.registered_at != registered_at) continue;
+      i.health = health;
+      return i;
+    }
+    return {Code::InstanceNotFound, "instance not found (or re-registered)"};
+  }
+
+  // Test controls -------------------------------------------------------------------
+
+  // Makes every listInstances()/updateHealth() fail as if the database were down.
+  void setUnavailable(bool unavailable) {
+    const std::lock_guard lock(mutex_);
+    unavailable_ = unavailable;
+  }
+  [[nodiscard]] int healthUpdates() {
+    const std::lock_guard lock(mutex_);
+    return health_updates_;
+  }
+
   discovery::Result<discovery::ServiceInstance> adjustConnectionCount(
       std::string_view service, std::string_view instance_id, std::int64_t delta) override {
     const std::lock_guard lock(mutex_);
@@ -127,6 +185,9 @@ class FakeRegistry final : public discovery::ServiceRegistry {
   std::mutex mutex_;
   std::map<std::string, std::vector<discovery::ServiceInstance>> services_;
   int counter_{0};
+  bool unavailable_{false};
+  int health_updates_{0};
+  int registrations_{0};
 };
 
 }  // namespace edgeflow::testing

@@ -30,8 +30,8 @@ What this requires the project to actually produce:
 
 ## Current State
 
-- **Current phase:** Phase 3 — Service Discovery & Registry — **COMPLETED** (Phase 1: `8b5c6f0`; Phase 2: `71ed967`; Phase 3: commit `feat: implement EdgeFlow phase 3 service discovery`, hash in git history)
-- **Next:** Phase 4 — Health Checking & Dynamic Discovery — **NOT STARTED**; begins only when the owner provides its prompt, cross-checked against `Phases.md`.
+- **Current phase:** Phase 4 — Health Checking & Dynamic Discovery — **COMPLETED** (Phase 1: `8b5c6f0`; Phase 2: `71ed967`; Phase 3: `f6f905d`; Phase 4: commit `feat: implement EdgeFlow phase 4 health checking`, hash in git history)
+- **Next:** Phase 5 — Load Balancing Engine — **NOT STARTED**; begins only when the owner provides its prompt, cross-checked against `Phases.md`.
 - **Last updated:** 2026-10-03
 
 ## Entry Template
@@ -120,6 +120,28 @@ What this requires the project to actually produce:
 - **Defects found and fixed during validation:** a test namespace ambiguity; a wrong test expectation (`300.1.1.1x` is a valid host name); a single `PQconsumeInput` does not reveal a server-closed idle connection (now two reads); a pooled connection can still die between the check and the use (reads now retry once).
 - **Exit condition met:** yes — registered instances were persisted in PostgreSQL, discovered, still discovered after restarting EdgeFlow and after taking the whole stack down and up, and no longer discovered after deregistration.
 - **Next step:** Phase 4 once the owner provides its prompt; cross-check it against `Phases.md` first.
+
+### Phase 4 — Health Checking & Dynamic Discovery (completed 2026-10-03)
+- **Commit(s):** `feat: implement EdgeFlow phase 4 health checking` (single commit on `main`; hash recorded in git history)
+- **What was built:** Active health checking of registered instances. `Prober` (TCP and HTTP behind one asynchronous, timeout-bounded operation), `HealthTracker` (pure state machine with failure and recovery thresholds), `HealthChecker` (timer-driven scheduling, discovery refresh, persistence), registry additions (`listInstances`, `lookupRoutable`, `updateHealth`), the neutral routable view (`GET /services/{service}/routable`), a `health_check` configuration section, application wiring and shutdown ordering, and a Compose configuration that enables it.
+- **Key files / modules:** `include/edgeflow/discovery/{HealthChecker,HealthState,Prober}.hpp`, `src/discovery/{HealthChecker,HealthState,Prober}.cpp`, registry changes in `ServiceRegistry.hpp` and `PostgresServiceRegistry.cpp`, `tests/discovery/{HealthState,Prober,HealthChecker,HealthCheckerPostgres}Test.cpp`, `tests/support/HealthTestSupport.hpp`.
+- **Design decisions:**
+  - TCP success only proves a port accepts connections; HTTP is healthy only on 2xx (redirects not followed). Every probe is bounded by one timeout covering resolve, connect, request and response head.
+  - The first probe of an unknown instance decides immediately; thresholds apply to settled states. A transition starts a fresh streak. Only transitions are written.
+  - Registration status and health stay separate: `active` and `draining` are probed, `disabled` is not; routable = `active` AND `healthy`. When the checker is on it owns `health_status` (a hand-written value is corrected by the next probe).
+  - The checker keeps only runtime state (counters, timers), never a copy of the registry; PostgreSQL stays the only store. The routable view is a database query, not a cache.
+  - Threading: one private `io_context` thread owns all checker state (no locks); blocking PostgreSQL calls run on a one-thread Asio pool, so database latency never delays probing. Probes are capped by `max_concurrent_checks`.
+  - Incarnation safety: a re-registered instance (different `registered_at`, host or port) restarts as new, its old probe is cancelled, and `updateHealth` is pinned to `registered_at` in SQL, so a late result can never land on a newer instance.
+  - Name resolution is isolated per host (`NameResolver`): Asio's resolver serialises `getaddrinfo()` on one thread, and in Docker Compose a removed container's DNS name made A's lookup queue behind B's hung one, so a healthy instance was wrongly marked unhealthy. Each distinct host now has its own detached lookup thread (same-host lookups share one, at most 16 at a time, cancelled lookups are never delivered).
+  - A failed refresh keeps the known instances; a failed write is retried after the next probe (no retry loop).
+  - `health_check.enabled` requires `database.enabled` (validated at load); `timeout_ms` may not exceed `interval_ms`.
+- **Tests run and results:** 272/272 CTest tests pass against a real PostgreSQL 16 with GCC 13 Debug `-Werror`, GCC 13 Release `-Werror` and Clang 18 Debug `-Werror`; the 74 Phase 4 tests passed 10 consecutive runs. Without a database 230 pass and 42 are reported as skipped (the Docker image build runs in that mode). Coverage: state-machine transitions and thresholds (pure unit tests), TCP and HTTP probes over real sockets (healthy, refused, unreachable, status classes 1xx to 5xx, malformed, hang-up, stalled and partial responses, DNS failure, restarted backend, cancellation), deterministic threshold tests with a manually driven prober, discovery refresh (new, deregistered, disabled, draining, re-registered), the concurrency cap, database outage and catch-up, concurrent register/deregister churn while checking, stop during stalled probes and timer waits, and the full failure to exclusion to recovery to reintroduction path against PostgreSQL.
+- **Runtime validation (Docker Compose, real PostgreSQL, two backend containers resolved by Docker DNS):** a registered instance became routable after its first probe (about 0.6 to 1.5 s); stopping backend B excluded it after about 2.7 s (failure threshold 2, interval 2 s) while plain discovery still listed it; restarting it reintroduced it after about 5 s (success threshold 2); an application-level failure (HTTP 500 with the port open) excluded it and recovery reintroduced it; an instance registered while running was picked up (about 1.5 s) and one deregistered stopped receiving probes; a disabled healthy instance was not routable and not probed; EdgeFlow was restarted while B was down and the routable view still excluded B immediately; with PostgreSQL stopped, the registry API returned 503 while `/health` stayed 200, checks continued, and the pending verdict was written once the database returned; `docker stop` took about 0.6 s, exit 0, with the HTTP server stopping before the health checker.
+- **Measured results:** timings above are observations of one run on a development machine with 2 s intervals, not benchmarks. No throughput or latency figures.
+- **Known issues / deviations from Phases.md:** None. One probe type applies to all instances (no per-instance settings). The routable view queries PostgreSQL on every call. The remote GitHub Actions run has not been confirmed. The Release Docker build skips the 42 database tests.
+- **Defects found and fixed during validation:** head-of-line blocking in name resolution (above; found by the Compose validation, covered by `ProberIsolationTest`); a test helper deadlock (closing a listening socket does not wake a blocked `accept` on Linux); an error-classification slip (a connection closed before a response was labelled malformed); tests that compared the checker's tracked count with one service instead of the whole registry.
+- **Exit condition met:** yes — routing (the routable view) excluded unhealthy instances and reintroduced recovered ones automatically, demonstrated with real TCP and HTTP backends against PostgreSQL, in tests and in Docker Compose.
+- **Next step:** Phase 5 once the owner provides its prompt; cross-check it against `Phases.md` first.
 
 ## Environment Notes
 

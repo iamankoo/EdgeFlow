@@ -1,6 +1,6 @@
 # EdgeFlow — Development Phases
 
-**Current Phase: Phase 3 completed — awaiting Phase 4 requirements**
+**Current Phase: Phase 4 completed — awaiting Phase 5 requirements**
 
 This document is the authoritative roadmap. Phases must not be skipped. A phase begins only after the previous phase has met its exit condition. Later-phase functionality must not be implemented early unless strictly required as a dependency and clearly documented.
 
@@ -11,7 +11,7 @@ Before implementing a phase, its detailed implementation prompt must be cross-ch
 | 1 | Foundation & Core Infrastructure | Completed |
 | 2 | TCP/HTTP Networking Engine | Completed |
 | 3 | Service Discovery & Registry | Completed |
-| 4 | Health Checking & Dynamic Discovery | Not started |
+| 4 | Health Checking & Dynamic Discovery | Completed |
 | 5 | Load Balancing Engine | Not started |
 | 6 | Reverse Proxy & Request Forwarding | Not started |
 | 7 | Reliability Engineering | Not started |
@@ -102,6 +102,8 @@ Build:
 - health state transitions
 
 **Exit condition:** Routing automatically excludes unhealthy instances and reintroduces recovered instances.
+
+**Completion summary:** Met. A health checker probes registered instances with timeout-bounded TCP or HTTP checks (HTTP healthy only on 2xx), drives an explicit state machine with failure and recovery thresholds, writes transitions to the PostgreSQL registry, and re-reads the registry periodically so added, removed, disabled and re-registered instances are handled without a restart. The registry exposes a neutral routable view (`active` AND `healthy`; `GET /services/{service}/routable`) that Phase 5 will consume. Verified with real backend containers in Docker Compose: a stopped backend and a backend returning HTTP 500 were excluded and, once they recovered, reintroduced; new instances were picked up and deregistered or disabled ones stopped being probed; health survived an EdgeFlow restart and a database outage; SIGTERM stopped the HTTP server then the checker. 272 tests pass with GCC 13 (Debug and Release) and Clang 18 (`-Werror`) against PostgreSQL (42 are skipped when no database is available). No selection or load-balancing logic exists yet (Phase 5). The remote GitHub Actions run has not been confirmed. No performance figures were measured. See `summary.md`.
 
 ---
 

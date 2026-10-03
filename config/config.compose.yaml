@@ -30,5 +30,18 @@ database:
   pool_size: 4               # 1..64 connections; each in-flight registry request holds one
   connect_timeout_seconds: 5 # 1..60
 
+health_check:
+  # Enabled for docker compose: registered instances are probed with HTTP GET /health.
+  # Short intervals so a failure or recovery is visible within seconds.
+  enabled: true
+  type: http                  # tcp | http
+  interval_ms: 2000          # 100..3600000; pause between one probe of an instance and the next
+  timeout_ms: 1000           # 10..60000; bound for one whole probe; must not exceed interval_ms
+  http_path: /health         # request path for type http; a 2xx response is healthy
+  failure_threshold: 2       # 1..100; consecutive failures before a healthy instance is marked unhealthy
+  success_threshold: 2       # 1..100; consecutive successes before an unhealthy instance is marked healthy
+  refresh_interval_ms: 2000   # 100..3600000; how often the registry is re-read for new/removed/disabled instances
+  max_concurrent_checks: 32  # 1..1024
+
 shutdown:
   grace_period_seconds: 5    # 0..300; in-flight requests may finish within this time
