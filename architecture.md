@@ -1,6 +1,6 @@
 # EdgeFlow — Architecture
 
-> **Status:** Sections 1-16 describe the **target architecture**; only the foundation in the "Phase 1 Implementation" section at the end is implemented. All other components are introduced phase by phase according to [Phases.md](Phases.md).
+> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation) and 18 (Phase 2: networking engine) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
 
 ## 1. High-Level Architecture
 
@@ -174,4 +174,91 @@ Configuration is loaded before logging exists (the log level comes from it), so 
 
 ### Planned in later phases
 
-Everything in sections 1-16 other than the above: networking, gateway pipeline, discovery, health checks, routing, proxy, reliability, rate limiting, caching, storage clients, metrics and tracing. The `server` configuration section is validated in Phase 1 but nothing listens on it.
+Everything in sections 1-16 other than sections 17 and 18.
+
+## 18. Phase 2 Implementation: TCP/HTTP Networking Engine
+
+### Implemented in Phase 2
+
+```text
+include/edgeflow/network/  TcpServer  HttpServer  HttpConnection  ConnectionTracker
+                           RequestHandler (+ LocalRequestHandler)  Http  HealthProbe
+src/network/               matching implementations
+```
+
+| Component | Responsibility |
+|-----------|----------------|
+| `TcpServer` | Resolves host/port from configuration, binds, listens, and accepts asynchronously on its own strand. Each accepted socket is created on a fresh strand. Accept errors are logged and retried (with a short back-off for resource exhaustion); `operation_aborted` during stop is not an error. Does not own the `io_context` or any threads. |
+| `HttpServer` | Owns the `io_context`, `worker_threads` worker threads, the `TcpServer`, and the `ConnectionTracker`. Enforces `max_connections`. `start()` / `stop(grace)` implement startup and graceful shutdown. |
+| `HttpConnection` | One TCP connection: Beast request parser, state machine, timers, keep-alive loop, error responses. |
+| `ConnectionTracker` | Mutex-protected registry of weak references to live connections: counts them and lets shutdown drain or force-close them. |
+| `RequestHandler` | Interface `HttpRequest -> HttpResponse`. `LocalRequestHandler` answers locally (`GET /`, `GET /health`, `POST /echo`, otherwise 404/405). This is **not** the load-balancing router, which arrives in Phase 5. |
+| `Http` | Beast type aliases and response builders (JSON bodies via nlohmann/json). |
+| `HealthProbe` | One-shot client behind `edgeflow --healthcheck` and the container `HEALTHCHECK`. |
+
+### Concurrency model
+
+One `io_context` run by `server.worker_threads` threads (default 2). Everything is asynchronous: there is no thread per connection or per request. Each connection's socket, timer and handlers share one strand, so a connection's state is touched by one thread at a time and needs no locks. The only cross-thread state is the `ConnectionTracker` (a mutex), atomic counters, and each connection's atomic `draining` flag (set by `beginDrain()` from the stopping thread so that a request being handled when shutdown starts still gets `Connection: close`). `RequestHandler::handle` runs on a worker thread and must be thread-safe and short; it is synchronous in Phase 2.
+
+### Connection lifecycle
+
+```text
+accepted ──► Idle ──readable──► Reading ──complete──► Handling ──► Writing ─┬─ keep-alive ─► Idle
+              │                      │                                  │     └─ close ─► Closing ─► closed
+              │ keep_alive_timeout   │ request_timeout                  │ request_timeout
+              ▼                      ▼                                  ▼
+           closed (silent)       408 + Closing                       closed
+```
+
+- **Idle** waits for the socket to become readable (`async_wait`, so no data is consumed) under `keep_alive_timeout_ms`. Waiting without reading matters: Beast's `async_read_some` keeps reading until the whole header is complete, which would leave a stalled partial header under the idle limit instead of the request timeout. On expiry the connection is closed without a response, which HTTP permits.
+- **Reading** begins when the first byte (or EOF) arrives; the whole request must arrive within `request_timeout_ms`. On expiry the pending read is cancelled and the client gets `408` with `Connection: close`.
+- **Writing** is bounded by `request_timeout_ms` so a client that stops reading cannot hold a connection forever.
+- **Closing** (after a final response) shuts down the write side so the peer sees EOF after the response, then discards incoming data until the peer closes or about one second passes. Closing the socket outright could reset the connection and destroy the response before the client reads it.
+- Keep-alive follows HTTP/1.1: persistent unless `Connection: close` (or HTTP/1.0 without keep-alive). Pipelined requests already in the buffer are served in order, one at a time.
+
+### Timers
+
+Each connection owns one `steady_timer` on its strand. Every arm or cancel increments a generation number captured by the wait handler, so a handler that was already queued when the timer was reset recognises itself as stale and does nothing. Because timer and socket handlers share a strand, a timeout cannot race with an in-flight completion, and a timer handler cannot touch a destroyed connection (it holds a `shared_ptr`).
+
+### Ownership and lifetime
+
+A `HttpConnection` is owned by the `shared_ptr` captured in each pending asynchronous operation and its timer; when the last one completes it destroys itself and deregisters from the tracker. The tracker holds only `weak_ptr`s and is itself shared-owned by every connection, so connections still queued in the `io_context` at destruction can safely deregister. Responses are heap-allocated and held by the write handler until the write completes. Shared ownership is used only for connections, not elsewhere.
+
+### Request limits and error responses
+
+| Setting | Default | Effect when exceeded |
+|---------|---------|----------------------|
+| `request_timeout_ms` | 5000 | 408 (reading) / connection closed (writing) |
+| `keep_alive_timeout_ms` | 10000 | idle connection closed silently |
+| `max_request_body_bytes` | 1 MiB | 413 |
+| `max_header_bytes` | 8192 | 431 |
+| `max_connections` | 1024 | new connection closed immediately (counted as rejected) |
+| `worker_threads` | 2 | n/a |
+
+Errors produced by the connection itself (400, 408, 413, 431, 500) always close the connection. 404 and 405 (with `Allow`) come from the handler and keep it open. A handler exception becomes a logged 500. Status codes that need an upstream (such as 502/504) do not exist yet. `Expect: 100-continue` is not implemented; clients that send it simply proceed after their own timeout.
+
+### Shutdown integration
+
+`Application` registers `http-server` with the `ShutdownCoordinator` after the signal handlers, so on shutdown it stops first:
+
+```text
+SIGINT/SIGTERM -> Application::run() leaves its loop -> ShutdownCoordinator
+  -> HttpServer::stop(grace_period)
+       1. TcpServer::stop()          stop accepting (acceptor closed on its strand)
+       2. beginDrain() every connection
+            idle -> closed now;  busy -> finish the response with "Connection: close", then close
+       3. wait up to the grace period for the tracker to empty
+          still open -> forceClose(), wait briefly
+       4. release the work guard, stop the io_context, join the workers
+  -> signal handlers released -> flush -> "shutdown completed"
+```
+
+`stop()` is idempotent and thread-safe. A failure to bind makes `Application::initialize()` fail (exit code 1), releasing the signal handlers it had installed.
+
+### Docker
+
+The image exposes the configured port (default 8080) and has a real `HEALTHCHECK` that runs `edgeflow --healthcheck` (a `GET /health` against the configured port, success only on 200), so no curl is needed. Compose publishes `${EDGEFLOW_HTTP_PORT:-8080}` to the container port, which must equal `server.port` in the mounted configuration.
+
+### Planned in later phases
+
+Service discovery, health checking of backends, load balancing, reverse proxying, reliability features, Redis caching and rate limiting, metrics and tracing.

@@ -13,6 +13,8 @@ CommandLineOptions parseCommandLine(std::span<const std::string_view> args,
       options.show_help = true;
     } else if (arg == "--version") {
       options.show_version = true;
+    } else if (arg == "--healthcheck") {
+      options.healthcheck = true;
     } else if (arg == "-c" || arg == "--config") {
       if (i + 1 >= args.size() || args[i + 1].empty()) {
         options.error = "option '" + std::string{arg} + "' requires a path argument";
@@ -40,6 +42,7 @@ std::string usage(std::string_view program) {
   text += kConfigEnvVariable;
   text += ")\n"
           "      --version        Print the version and exit\n"
+          "      --healthcheck    Probe GET /health on the configured endpoint; exit 0 if healthy\n"
           "  -h, --help           Show this help and exit\n";
   return text;
 }

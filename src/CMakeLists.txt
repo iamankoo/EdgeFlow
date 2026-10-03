@@ -4,12 +4,21 @@ add_library(edgeflow_core STATIC
   core/CommandLine.cpp
   core/ShutdownCoordinator.cpp
   core/SignalHandler.cpp
-  logging/Logger.cpp)
+  logging/Logger.cpp
+  network/ConnectionTracker.cpp
+  network/HealthProbe.cpp
+  network/Http.cpp
+  network/HttpConnection.cpp
+  network/HttpServer.cpp
+  network/LocalRequestHandler.cpp
+  network/TcpServer.cpp)
 add_library(edgeflow::core ALIAS edgeflow_core)
 
 target_include_directories(edgeflow_core PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_compile_definitions(edgeflow_core PUBLIC EDGEFLOW_VERSION="${PROJECT_VERSION}")
-target_link_libraries(edgeflow_core PUBLIC spdlog::spdlog PRIVATE yaml-cpp::yaml-cpp)
+target_link_libraries(edgeflow_core
+  PUBLIC spdlog::spdlog Boost::headers Threads::Threads
+  PRIVATE yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json)
 target_compile_features(edgeflow_core PUBLIC cxx_std_20)
 edgeflow_enable_warnings(edgeflow_core)
 

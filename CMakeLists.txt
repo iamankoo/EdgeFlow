@@ -18,7 +18,6 @@ endif()
 
 option(EDGEFLOW_BUILD_TESTS "Build the unit tests" ON)
 option(EDGEFLOW_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
-option(EDGEFLOW_ENABLE_BOOST "Locate Boost (dependency only; used from Phase 2)" OFF)
 
 include(CompilerWarnings)
 include(Dependencies)

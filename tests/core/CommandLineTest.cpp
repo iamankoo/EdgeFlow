@@ -39,6 +39,15 @@ TEST(CommandLineTest, HelpAndVersion) {
   EXPECT_TRUE(parseCommandLine(version).show_version);
 }
 
+TEST(CommandLineTest, HealthcheckFlag) {
+  const std::vector<std::string_view> args{"--healthcheck", "-c", "x.yaml"};
+  const auto options = parseCommandLine(args);
+  ASSERT_TRUE(options.ok());
+  EXPECT_TRUE(options.healthcheck);
+  EXPECT_EQ(options.config_path, "x.yaml");
+  EXPECT_FALSE(parseCommandLine({}).healthcheck);
+}
+
 TEST(CommandLineTest, MissingConfigValueIsAnError) {
   const std::vector<std::string_view> args{"--config"};
   const auto options = parseCommandLine(args);

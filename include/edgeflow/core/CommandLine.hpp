@@ -11,6 +11,7 @@ struct CommandLineOptions {
   std::filesystem::path config_path;
   bool show_help{false};
   bool show_version{false};
+  bool healthcheck{false};  // probe a running instance's /health endpoint and exit
   std::string error;  // non-empty when the arguments are invalid
 
   [[nodiscard]] bool ok() const noexcept { return error.empty(); }

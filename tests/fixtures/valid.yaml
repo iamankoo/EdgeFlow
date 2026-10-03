@@ -6,6 +6,12 @@ application:
 server:
   host: 127.0.0.1
   port: 9090
+  request_timeout_ms: 1500
+  keep_alive_timeout_ms: 2500
+  max_request_body_bytes: 2048
+  max_header_bytes: 4096
+  max_connections: 50
+  worker_threads: 3
 
 shutdown:
   grace_period_seconds: 3

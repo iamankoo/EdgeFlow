@@ -18,6 +18,13 @@ constexpr std::uintmax_t kMaxConfigBytes = 1024 * 1024;
 constexpr std::size_t kMaxNameLength = 64;
 constexpr std::size_t kMaxHostLength = 255;
 constexpr long long kMaxGraceSeconds = 300;
+constexpr long long kMinTimeoutMs = 10;
+constexpr long long kMaxTimeoutMs = 600000;
+constexpr long long kMaxBodyBytes = 64LL * 1024 * 1024;
+constexpr long long kMinHeaderBytes = 1024;
+constexpr long long kMaxHeaderBytes = 65536;
+constexpr long long kMaxConnections = 100000;
+constexpr long long kMaxWorkerThreads = 64;
 
 using Errors = std::vector<std::string>;
 
@@ -95,6 +102,19 @@ std::optional<long long> readInteger(const YAML::Node& section, const std::strin
   return std::nullopt;
 }
 
+std::optional<long long> readBounded(const YAML::Node& section, const std::string& path,
+                                     const std::string& key, long long min, long long max,
+                                     Errors& errors) {
+  const auto value = readInteger(section, path, key, errors);
+  if (!value) return std::nullopt;
+  if (*value < min || *value > max) {
+    errors.push_back("'" + path + "." + key + "' must be between " + std::to_string(min) +
+                     " and " + std::to_string(max) + " (got " + std::to_string(*value) + ")");
+    return std::nullopt;
+  }
+  return value;
+}
+
 bool isValidName(const std::string& name) {
   if (name.empty() || name.size() > kMaxNameLength) return false;
   return std::all_of(name.begin(), name.end(), [](unsigned char c) {
@@ -141,7 +161,11 @@ void parseApplication(const YAML::Node& root, ApplicationConfig& out, Errors& er
 
 void parseServer(const YAML::Node& root, ServerConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "server", errors);
-  rejectUnknownKeys(section, "server", {"host", "port"}, errors);
+  rejectUnknownKeys(section, "server",
+                    {"host", "port", "request_timeout_ms", "keep_alive_timeout_ms",
+                     "max_request_body_bytes", "max_header_bytes", "max_connections",
+                     "worker_threads"},
+                    errors);
 
   if (auto host = readString(section, "server", "host", errors)) {
     if (isValidHost(*host)) {
@@ -150,13 +174,30 @@ void parseServer(const YAML::Node& root, ServerConfig& out, Errors& errors) {
       errors.push_back("'server.host' must be a non-empty string without whitespace");
     }
   }
-  if (auto port = readInteger(section, "server", "port", errors)) {
-    if (*port >= 1 && *port <= 65535) {
-      out.port = static_cast<std::uint16_t>(*port);
-    } else {
-      errors.push_back("'server.port' must be between 1 and 65535 (got " +
-                       std::to_string(*port) + ")");
-    }
+  if (auto v = readBounded(section, "server", "port", 1, 65535, errors)) {
+    out.port = static_cast<std::uint16_t>(*v);
+  }
+  if (auto v = readBounded(section, "server", "request_timeout_ms", kMinTimeoutMs,
+                           kMaxTimeoutMs, errors)) {
+    out.request_timeout = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(section, "server", "keep_alive_timeout_ms", kMinTimeoutMs,
+                           kMaxTimeoutMs, errors)) {
+    out.keep_alive_timeout = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(section, "server", "max_request_body_bytes", 0, kMaxBodyBytes,
+                           errors)) {
+    out.max_request_body_bytes = static_cast<std::size_t>(*v);
+  }
+  if (auto v = readBounded(section, "server", "max_header_bytes", kMinHeaderBytes,
+                           kMaxHeaderBytes, errors)) {
+    out.max_header_bytes = static_cast<std::size_t>(*v);
+  }
+  if (auto v = readBounded(section, "server", "max_connections", 1, kMaxConnections, errors)) {
+    out.max_connections = static_cast<std::size_t>(*v);
+  }
+  if (auto v = readBounded(section, "server", "worker_threads", 1, kMaxWorkerThreads, errors)) {
+    out.worker_threads = static_cast<unsigned>(*v);
   }
 }
 
@@ -164,14 +205,9 @@ void parseShutdown(const YAML::Node& root, ShutdownConfig& out, Errors& errors) 
   const YAML::Node section = sectionOf(root, "shutdown", errors);
   rejectUnknownKeys(section, "shutdown", {"grace_period_seconds"}, errors);
 
-  if (auto grace = readInteger(section, "shutdown", "grace_period_seconds", errors)) {
-    if (*grace >= 0 && *grace <= kMaxGraceSeconds) {
-      out.grace_period = std::chrono::seconds{*grace};
-    } else {
-      errors.push_back("'shutdown.grace_period_seconds' must be between 0 and " +
-                       std::to_string(kMaxGraceSeconds) + " (got " + std::to_string(*grace) +
-                       ")");
-    }
+  if (auto v = readBounded(section, "shutdown", "grace_period_seconds", 0, kMaxGraceSeconds,
+                           errors)) {
+    out.grace_period = std::chrono::seconds{*v};
   }
 }
 

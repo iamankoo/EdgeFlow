@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -11,11 +12,13 @@
 #include "edgeflow/core/Application.hpp"
 #include "edgeflow/core/CommandLine.hpp"
 #include "edgeflow/logging/Logger.hpp"
+#include "edgeflow/network/HealthProbe.hpp"
 
 namespace {
 constexpr int kExitOk = 0;
 constexpr int kExitInitFailure = 1;
 constexpr int kExitUsageOrConfig = 2;
+constexpr std::chrono::milliseconds kHealthProbeTimeout{2000};
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -46,6 +49,18 @@ int main(int argc, char** argv) {
     return kExitUsageOrConfig;
   }
   const auto& config = manager.config();
+
+  if (options.healthcheck) {
+    // A wildcard bind address is not connectable; probe the loopback interface instead.
+    const bool wildcard = config.server.host == "0.0.0.0" || config.server.host == "::";
+    const std::string host = wildcard ? "127.0.0.1" : config.server.host;
+    std::string detail;
+    if (!edgeflow::network::probeHealth(host, config.server.port, kHealthProbeTimeout, detail)) {
+      std::cerr << "unhealthy: " << host << ':' << config.server.port << ": " << detail << '\n';
+      return kExitInitFailure;
+    }
+    return kExitOk;
+  }
 
   try {
     edgeflow::logging::LoggerOptions logger_options;

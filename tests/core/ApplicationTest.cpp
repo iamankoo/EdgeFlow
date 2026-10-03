@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "edgeflow/core/Application.hpp"
-#include "support/TestLogger.hpp"
+#include "support/NetTestSupport.hpp"
 
 namespace {
 
@@ -15,12 +15,19 @@ using edgeflow::core::Application;
 using edgeflow::core::ApplicationOptions;
 using edgeflow::core::ApplicationState;
 using edgeflow::testing::CapturedLogger;
+using edgeflow::testing::RecordingHandler;
+using edgeflow::testing::ServerHarness;
+using edgeflow::testing::TestClient;
+namespace net = edgeflow::testing::net;
+namespace http = edgeflow::testing::http;
 
-constexpr ApplicationOptions kNoSignals{.install_signal_handlers = false};
+const ApplicationOptions kNoSignals{.install_signal_handlers = false, .request_handler = nullptr};
 
 edgeflow::config::Config testConfig() {
   edgeflow::config::Config config;
   config.shutdown.grace_period = std::chrono::seconds{1};
+  config.server.host = "127.0.0.1";
+  config.server.port = 0;  // let the OS pick a free port
   return config;
 }
 
@@ -174,6 +181,108 @@ TEST(ApplicationTest, SecondApplicationCannotInstallSignalHandlers) {
   first.shutdown();
   Application third(testConfig(), second_log.logger());
   EXPECT_TRUE(third.initialize()) << "handlers are released by shutdown";
+}
+
+TEST(ApplicationNetworkTest, InitializeStartsHttpServerThatAnswers) {
+  CapturedLogger log;
+  Application app(testConfig(), log.logger(), kNoSignals);
+  ASSERT_TRUE(app.initialize());
+  ASSERT_NE(app.httpPort(), 0);
+  EXPECT_TRUE(log.contains("HTTP server listening"));
+
+  TestClient client(app.httpPort());
+  const auto response = client.get("/health");
+  ASSERT_TRUE(response);
+  EXPECT_EQ(response->result(), http::status::ok);
+}
+
+TEST(ApplicationNetworkTest, ShutdownStopsTheServerAndRefusesConnections) {
+  CapturedLogger log;
+  Application app(testConfig(), log.logger(), kNoSignals);
+  ASSERT_TRUE(app.initialize());
+  const auto port = app.httpPort();
+  {
+    TestClient client(port);
+    ASSERT_TRUE(client.get("/health"));
+  }
+  app.shutdown();
+
+  net::io_context io;
+  net::ip::tcp::socket socket(io);
+  boost::system::error_code ec;
+  socket.connect({net::ip::make_address("127.0.0.1"), port}, ec);
+  EXPECT_TRUE(ec);
+  EXPECT_TRUE(log.contains("stopping component 'http-server'"));
+  EXPECT_TRUE(log.contains("HTTP server stopped"));
+}
+
+TEST(ApplicationNetworkTest, InitializeFailsWhenThePortIsTaken) {
+  ServerHarness holder;  // occupies a port
+  ASSERT_TRUE(holder.started);
+
+  CapturedLogger log;
+  auto config = testConfig();
+  config.server.port = holder.port();
+  Application app(config, log.logger(), kNoSignals);
+  EXPECT_FALSE(app.initialize());
+  EXPECT_EQ(app.state(), ApplicationState::Created);
+  EXPECT_TRUE(log.contains("failed to start the HTTP server"));
+  EXPECT_EQ(app.run(), 1);
+}
+
+TEST(ApplicationNetworkTest, FailedInitializeReleasesSignalHandlers) {
+  ServerHarness holder;
+  ASSERT_TRUE(holder.started);
+
+  CapturedLogger log;
+  auto config = testConfig();
+  config.server.port = holder.port();
+  Application failing(config, log.logger());  // installs signal handlers first
+  EXPECT_FALSE(failing.initialize());
+
+  Application next(testConfig(), log.logger());
+  EXPECT_TRUE(next.initialize()) << "handlers must have been released by the failed attempt";
+}
+
+TEST(ApplicationNetworkTest, RunServesRequestsUntilSignalThenStopsCleanly) {
+  CapturedLogger log;
+  Application app(testConfig(), log.logger());
+  ASSERT_TRUE(app.initialize());
+  const auto port = app.httpPort();
+
+  auto result = std::async(std::launch::async, [&app] { return app.run(); });
+  {
+    TestClient client(port);
+    ASSERT_TRUE(client.get("/"));
+    ASSERT_TRUE(client.get("/health"));
+  }
+  ASSERT_EQ(std::raise(SIGINT), 0);
+  ASSERT_EQ(result.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+  EXPECT_EQ(result.get(), 0);
+
+  const auto requested = log.position("shutdown requested (SIGINT)");
+  const auto http_stopped = log.position("HTTP server stopped");
+  const auto completed = log.position("shutdown completed");
+  ASSERT_NE(requested, std::string::npos);
+  ASSERT_NE(http_stopped, std::string::npos);
+  ASSERT_NE(completed, std::string::npos);
+  EXPECT_LT(requested, http_stopped);
+  EXPECT_LT(http_stopped, completed);
+}
+
+TEST(ApplicationNetworkTest, CustomRequestHandlerIsUsed) {
+  CapturedLogger log;
+  auto recorder = std::make_shared<RecordingHandler>();
+  ApplicationOptions options;
+  options.install_signal_handlers = false;
+  options.request_handler = recorder;
+  Application app(testConfig(), log.logger(), options);
+  ASSERT_TRUE(app.initialize());
+  TestClient client(app.httpPort());
+  const auto response = client.get("/anything");
+  ASSERT_TRUE(response);
+  EXPECT_EQ(response->body(), "recorded");
+  EXPECT_EQ(recorder->count(), 1);
 }
 
 }  // namespace

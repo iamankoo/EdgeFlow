@@ -30,9 +30,9 @@ What this requires the project to actually produce:
 
 ## Current State
 
-- **Current phase:** Phase 1 — Foundation & Core Infrastructure — complete
-- **Next phase:** Phase 2 — TCP/HTTP Networking Engine (awaiting detailed requirements from the owner)
-- **Last updated:** 2026-10-02 (end of Phase 1)
+- **Current phase:** Phase 2 — TCP/HTTP Networking Engine — **COMPLETED** (Phase 1: `8b5c6f0`; Phase 2: commit `feat: implement EdgeFlow phase 2 networking engine`, hash in git history)
+- **Next:** Phase 3 — Service Discovery & Registry — **NOT STARTED**; begins only when the owner provides its prompt, cross-checked against `Phases.md`.
+- **Last updated:** 2026-10-03
 
 ## Entry Template
 
@@ -77,3 +77,30 @@ What this requires the project to actually produce:
 - **Known issues / deviations from Phases.md:** None. Environment limitation: the Windows dev machine has no C++20 compiler or CMake (MinGW GCC 6.3), so builds and tests were run in Linux containers. The GitHub Actions workflow was syntax-checked locally; its remote run was not verified at the time of the commit.
 - **Exit condition met:** yes — demonstrated by running the container (start, config load, init, lifecycle logs, clean shutdown).
 - **Next step:** Phase 2 once the owner provides its prompt; cross-check it against `Phases.md` first.
+
+### Phase 2 — TCP/HTTP Networking Engine (completed 2026-10-03)
+- **Commit(s):** `feat: implement EdgeFlow phase 2 networking engine` (single commit on `main`; hash recorded in git history)
+- **What was built:** An asynchronous HTTP/1.1 server on Boost.Asio + Boost.Beast: TCP listener (configurable host/port), per-connection state machine (Idle/Reading/Handling/Writing/Closing), request parsing and response generation, keep-alive, idle and request timeouts (408), request body/header limits (413/431), connection limit, a local request handler (`GET /`, `GET /health`, `POST /echo`, 404/405), concurrent clients on a small `io_context` worker pool, graceful drain integrated with the Phase 1 `ShutdownCoordinator`, `edgeflow --healthcheck`, Docker `HEALTHCHECK`, Compose port publishing, CI changes.
+- **Key files / modules:** `include/edgeflow/network/*`, `src/network/*`, `tests/network/*`, `tests/support/NetTestSupport.hpp`; config keys under `server.*` (`request_timeout_ms`, `keep_alive_timeout_ms`, `max_request_body_bytes`, `max_header_bytes`, `max_connections`, `worker_threads`).
+- **Design decisions:**
+  - Per-connection `steady_timer` with a generation counter instead of Beast `tcp_stream` timeouts (those close the socket before a 408 can be sent).
+  - Idle wait uses `socket.async_wait(wait_read)`, not `http::async_read_some`: Beast's `async_read_some` reads until the whole header is complete, which left stalled partial headers under the idle limit and never produced a 408. The request timeout now starts when the first byte arrives.
+  - `draining` is an atomic set by `beginDrain()` from the stopping thread, because a synchronous handler blocks the connection's strand; a draining connection answers with `Connection: close` and never returns to Idle.
+  - Final responses use a lingering close (shutdown send, drain) so the client can read the response.
+  - Boost comes from the system (`libboost-dev` >= 1.83, header-only); nlohmann/json v3.11.3 via FetchContent.
+  - Beast `string_view` values are converted to `std::string_view` before being passed to the logger (fmt has no formatter for `boost::core::string_view`).
+  - The Dockerfile build is bounded with `ARG BUILD_JOBS=2`.
+- **Tests run and results:** 127/127 CTest tests pass with GCC 13.3 Debug `-Werror`, Clang 18.1.3 Debug `-Werror`, and inside the Release `-Werror` Docker build; 5 consecutive full GCC runs passed. Real-socket tests cover endpoints, parsing errors, limits, keep-alive and reuse, pipelining, timeouts, disconnects and resets, write failure, connection limit, graceful and forced shutdown, and 1/10/50/100 concurrent clients.
+- **Runtime validation (real binary, Linux container):** `/` 200, `/health` 200, unknown path 404, wrong method 405 with `Allow`, `Connection: close` honoured, malformed requests 400 + close, oversized header 431, oversized body 413, curl and raw-socket keep-alive over one connection, partial header and stalled body 408 at 5 s, idle close at 10 s, 10/50/100 concurrent clients (50/250/500 requests) all correct, SIGTERM drains and exits 0, stalled connection force-closed at the grace period.
+- **Docker:** `docker build -t edgeflow:phase2 .` succeeds (Release, `-Werror`, tests run in the build, `-j2`); the container becomes healthy, serves `/` and `/health`, and `docker stop` exits 0 gracefully. `docker compose up --build` / `down` verified twice (healthy, HTTP 200, clean teardown).
+- **Measured results:** None. Correctness only; no throughput or latency numbers exist.
+- **Known issues / deviations from Phases.md:** None. The GitHub Actions workflow (now installing `libboost-dev`) has not been confirmed by a remote run. `Expect: 100-continue` is not implemented. The request handler is synchronous.
+- **Defects found and fixed during validation:** fmt could not format Beast `string_view` (HttpConnection log calls); partial-header timeout (above); in-flight request kept the connection alive during drain (above); a test discarded a `[[nodiscard]]` result under Clang; two test-only compile errors (missing include, `constexpr` struct with `shared_ptr`).
+- **Exit condition met:** yes — the real server was shown handling concurrent keep-alive clients over HTTP/1.1, locally and in Docker/Compose.
+- **Next step:** Phase 3 once the owner provides its prompt; cross-check it against `Phases.md` first.
+
+## Environment Notes
+
+- The Windows host has no C++20 compiler or CMake; all builds run in Linux containers (Docker Desktop must be running).
+- The Docker VM has about 3.7 GB RAM. Building Beast code with default ninja parallelism exhausted memory and hung the engine, so always build with `-j2` (the Dockerfile defaults to `BUILD_JOBS=2`).
+- Large bash heredocs in this environment can fail; write big files with an editor tool.

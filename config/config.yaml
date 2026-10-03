@@ -1,4 +1,4 @@
-# EdgeFlow foundation configuration.
+# EdgeFlow configuration.
 # Unknown keys are rejected so that typos are caught at startup.
 
 application:
@@ -6,10 +6,15 @@ application:
   environment: development   # development | staging | production
   log_level: info            # trace | debug | info | warn | error | critical | off
 
-# Reserved for the networking engine. Nothing listens on this endpoint yet.
 server:
-  host: 0.0.0.0
-  port: 8080
+  host: 0.0.0.0              # address to bind (IP literal or resolvable name)
+  port: 8080                 # 1..65535
+  request_timeout_ms: 5000   # 10..600000; time allowed to receive a request / write a response
+  keep_alive_timeout_ms: 10000   # 10..600000; idle time before a keep-alive connection is closed
+  max_request_body_bytes: 1048576   # 0..67108864 (default 1 MiB); larger bodies get 413
+  max_header_bytes: 8192     # 1024..65536; larger headers get 431
+  max_connections: 1024      # 1..100000; connections beyond this are closed immediately
+  worker_threads: 2          # 1..64; threads running the asynchronous I/O loop
 
 shutdown:
-  grace_period_seconds: 5    # 0..300
+  grace_period_seconds: 5    # 0..300; in-flight requests may finish within this time

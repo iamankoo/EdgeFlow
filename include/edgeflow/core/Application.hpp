@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -9,6 +10,8 @@
 #include "edgeflow/core/ShutdownCoordinator.hpp"
 #include "edgeflow/core/SignalHandler.hpp"
 #include "edgeflow/logging/Logger.hpp"
+#include "edgeflow/network/HttpServer.hpp"
+#include "edgeflow/network/RequestHandler.hpp"
 
 namespace edgeflow::core {
 
@@ -17,6 +20,8 @@ enum class ApplicationState { Created, Initialized, Running, Stopped };
 struct ApplicationOptions {
   // Disabled by tests that must not touch process-wide signal handlers.
   bool install_signal_handlers{true};
+  // Defaults to network::LocalRequestHandler when null.
+  std::shared_ptr<network::RequestHandler> request_handler;
 };
 
 // Application lifecycle: construct -> initialize() -> run() -> shutdown().
@@ -45,7 +50,12 @@ class Application {
 
   [[nodiscard]] ApplicationState state() const noexcept { return state_.load(); }
 
-  // Future components (e.g. network listeners) register their stop callbacks here.
+  // Port the HTTP server is bound to (0 before a successful initialize()).
+  [[nodiscard]] std::uint16_t httpPort() const noexcept {
+    return http_server_ ? http_server_->port() : std::uint16_t{0};
+  }
+
+  // Components register their stop callbacks here.
   [[nodiscard]] ShutdownCoordinator& shutdownCoordinator() noexcept { return shutdown_; }
 
  private:
@@ -54,6 +64,7 @@ class Application {
   ApplicationOptions options_;
   ShutdownCoordinator shutdown_;
   std::unique_ptr<SignalHandler> signals_;
+  std::unique_ptr<network::HttpServer> http_server_;
 
   std::atomic<ApplicationState> state_{ApplicationState::Created};
   std::atomic<bool> stop_requested_{false};

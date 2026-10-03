@@ -4,9 +4,13 @@ services:
   edgeflow:
     build:
       context: .
-    image: edgeflow:phase1
+    image: edgeflow:phase2
     container_name: edgeflow
     restart: "no"
+    ports:
+      # Host port is configurable: EDGEFLOW_HTTP_PORT=9000 docker compose up
+      # The container port must equal server.port in config/config.yaml (default 8080).
+      - "${EDGEFLOW_HTTP_PORT:-8080}:8080"
     volumes:
       - ./config/config.yaml:/etc/edgeflow/config.yaml:ro
     # Must exceed shutdown.grace_period_seconds so a graceful stop is never killed.
@@ -16,3 +20,4 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # The image's HEALTHCHECK (edgeflow --healthcheck, i.e. GET /health) applies.

@@ -28,7 +28,16 @@ FetchContent_Declare(yaml-cpp
   GIT_SHALLOW    TRUE
   SYSTEM)
 
-FetchContent_MakeAvailable(spdlog yaml-cpp)
+# --- nlohmann/json (JSON bodies) ---------------------------------------------
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+set(JSON_Install OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.11.3
+  GIT_SHALLOW    TRUE
+  SYSTEM)
+
+FetchContent_MakeAvailable(spdlog yaml-cpp nlohmann_json)
 
 # --- GoogleTest (testing) ---------------------------------------------------
 if(EDGEFLOW_BUILD_TESTS)
@@ -42,10 +51,10 @@ if(EDGEFLOW_BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
 endif()
 
-# --- Boost (dependency only) ------------------------------------------------
-# Boost.Asio and Boost.Beast are first used by the networking engine (Phase 2).
-# Phase 1 only provides the switch; it is OFF by default and nothing links it.
-if(EDGEFLOW_ENABLE_BOOST)
-  find_package(Boost 1.83 REQUIRED)
-  message(STATUS "Boost ${Boost_VERSION} found (not yet used by any target)")
-endif()
+# --- Boost.Asio / Boost.Beast (networking) ----------------------------------
+# Both are header-only; Boost itself is taken from the system (libboost-dev on
+# Debian/Ubuntu) because fetching and building it is slow. 1.83 is the oldest version
+# the project is tested with.
+find_package(Boost 1.83 REQUIRED)
+find_package(Threads REQUIRED)
+message(STATUS "Boost ${Boost_VERSION} found")

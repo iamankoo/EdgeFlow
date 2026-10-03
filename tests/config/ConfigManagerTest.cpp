@@ -30,6 +30,12 @@ TEST(ConfigManagerTest, LoadsValidFile) {
   EXPECT_EQ(config.server.host, "127.0.0.1");
   EXPECT_EQ(config.server.port, 9090);
   EXPECT_EQ(config.shutdown.grace_period.count(), 3);
+  EXPECT_EQ(config.server.request_timeout.count(), 1500);
+  EXPECT_EQ(config.server.keep_alive_timeout.count(), 2500);
+  EXPECT_EQ(config.server.max_request_body_bytes, 2048U);
+  EXPECT_EQ(config.server.max_header_bytes, 4096U);
+  EXPECT_EQ(config.server.max_connections, 50U);
+  EXPECT_EQ(config.server.worker_threads, 3U);
   EXPECT_TRUE(manager.errors().empty());
 }
 
@@ -68,6 +74,12 @@ TEST(ConfigManagerTest, PartialConfigUsesDefaults) {
   EXPECT_EQ(config.server.host, "0.0.0.0");
   EXPECT_EQ(config.server.port, 8080);
   EXPECT_EQ(config.shutdown.grace_period.count(), 5);
+  EXPECT_EQ(config.server.request_timeout.count(), 5000);
+  EXPECT_EQ(config.server.keep_alive_timeout.count(), 10000);
+  EXPECT_EQ(config.server.max_request_body_bytes, 1024U * 1024U);
+  EXPECT_EQ(config.server.max_header_bytes, 8192U);
+  EXPECT_EQ(config.server.max_connections, 1024U);
+  EXPECT_EQ(config.server.worker_threads, 2U);
 }
 
 TEST(ConfigManagerTest, NullSectionUsesDefaults) {
@@ -121,6 +133,57 @@ TEST(ConfigManagerTest, AcceptsPortBoundaries) {
     EXPECT_TRUE(manager.loadFromString(std::string{"server:\n  port: "} + port + "\n"))
         << "port " << port;
   }
+}
+
+TEST(ConfigManagerTest, ShippedConfigMatchesDocumentedDefaults) {
+  ConfigManager shipped;
+  ASSERT_TRUE(shipped.load(EDGEFLOW_DEFAULT_CONFIG));
+  ConfigManager defaults;
+  ASSERT_TRUE(defaults.loadFromString("application:\n  name: edgeflow\n"));
+  const auto& a = shipped.config().server;
+  const auto& b = defaults.config().server;
+  EXPECT_EQ(a.request_timeout, b.request_timeout);
+  EXPECT_EQ(a.keep_alive_timeout, b.keep_alive_timeout);
+  EXPECT_EQ(a.max_request_body_bytes, b.max_request_body_bytes);
+  EXPECT_EQ(a.max_header_bytes, b.max_header_bytes);
+  EXPECT_EQ(a.max_connections, b.max_connections);
+  EXPECT_EQ(a.worker_threads, b.worker_threads);
+}
+
+TEST(ConfigManagerTest, RejectsOutOfRangeNetworkSettings) {
+  const char* const invalid[] = {
+      "request_timeout_ms: 9",       "request_timeout_ms: 600001",
+      "keep_alive_timeout_ms: 0",    "keep_alive_timeout_ms: -5",
+      "max_request_body_bytes: -1",  "max_request_body_bytes: 67108865",
+      "max_header_bytes: 1023",      "max_header_bytes: 65537",
+      "max_connections: 0",          "max_connections: 100001",
+      "worker_threads: 0",           "worker_threads: 65",
+      "worker_threads: many",        "request_timeout_ms: 1.5"};
+  for (const char* line : invalid) {
+    ConfigManager manager;
+    EXPECT_FALSE(manager.loadFromString(std::string{"server:\n  "} + line + "\n")) << line;
+    EXPECT_FALSE(manager.errors().empty()) << line;
+  }
+}
+
+TEST(ConfigManagerTest, AcceptsNetworkSettingBoundaries) {
+  const char* const valid[] = {
+      "request_timeout_ms: 10",           "request_timeout_ms: 600000",
+      "keep_alive_timeout_ms: 10",        "max_request_body_bytes: 0",
+      "max_request_body_bytes: 67108864", "max_header_bytes: 1024",
+      "max_header_bytes: 65536",          "max_connections: 1",
+      "max_connections: 100000",          "worker_threads: 1",
+      "worker_threads: 64"};
+  for (const char* line : valid) {
+    ConfigManager manager;
+    EXPECT_TRUE(manager.loadFromString(std::string{"server:\n  "} + line + "\n")) << line;
+  }
+}
+
+TEST(ConfigManagerTest, NetworkErrorsNameTheOffendingKey) {
+  ConfigManager manager;
+  EXPECT_FALSE(manager.loadFromString("server:\n  max_connections: 0\n"));
+  EXPECT_TRUE(anyErrorContains(manager, "server.max_connections"));
 }
 
 TEST(ConfigManagerTest, RejectsNonIntegerPort) {

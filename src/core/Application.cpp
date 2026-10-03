@@ -45,8 +45,22 @@ bool Application::initialize() {
     shutdown_.registerComponent("signal-handlers", [this] { signals_.reset(); });
   }
 
-  logger_->debug("configured listen endpoint {}:{} (networking not enabled)",
-                 config_.server.host, config_.server.port);
+  auto handler = options_.request_handler;
+  if (!handler) handler = std::make_shared<network::LocalRequestHandler>();
+  http_server_ =
+      std::make_unique<network::HttpServer>(config_.server, logger_, std::move(handler));
+  if (!http_server_->start()) {
+    logger_->error("failed to start the HTTP server on {}:{}", config_.server.host,
+                   config_.server.port);
+    http_server_.reset();
+    signals_.reset();
+    return false;
+  }
+  shutdown_.registerComponent("http-server", [this] {
+    http_server_->stop(
+        std::chrono::duration_cast<std::chrono::milliseconds>(config_.shutdown.grace_period));
+  });
+
   logger_->info("application initialized (name={}, environment={})", config_.application.name,
                 config::toString(config_.application.environment));
   state_.store(ApplicationState::Initialized);
