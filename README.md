@@ -4,9 +4,9 @@ EdgeFlow is a high-performance **API Gateway, Service Discovery system, and Load
 
 ## Current Status
 
-**Phases 1 to 4 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that discovers registered backend instances (Phase 3) and an **active health checker** that excludes unhealthy instances from the routable view and reintroduces recovered ones (Phase 4).
+**Phases 1 to 5 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that discovers registered backend instances (Phase 3) and an **active health checker** that excludes unhealthy instances from the routable view and reintroduces recovered ones (Phase 4), and **four load-balancing strategies** that choose among the routable instances (Phase 5).
 
-It is **not yet a gateway**: it answers requests locally and manages the registry, but it does not forward traffic. It has no load balancing, reverse proxying, caching, or rate limiting; those arrive in Phases 5-10. See [Phases.md](Phases.md).
+It is **not yet a gateway**: it answers requests locally and manages the registry, but it does not forward traffic. It does not yet forward requests to the instance it selects (reverse proxying is Phase 6), and has no caching or rate limiting; those arrive in Phases 6-10. See [Phases.md](Phases.md).
 
 ## Implemented
 
@@ -40,9 +40,13 @@ It is **not yet a gateway**: it answers requests locally and manages the registr
 - Discovery refresh: new, deregistered, disabled and re-registered instances are handled without a restart
 - A neutral routable view (`active` AND `healthy`) via `GET /services/{service}/routable`, for the load balancer (Phase 5)
 
+**Phase 5 - load balancing**
+- One `LoadBalancer` abstraction, four strategies: Round Robin, Least Connections, Weighted Routing, Consistent Hashing
+- Strategies choose only among the routable (active AND healthy) instances supplied by discovery; none contains health logic
+- `routing.strategy` selects the strategy; `GET /services/{service}/route[?key=K]` shows the decision (nothing is forwarded yet)
+
 ## Planned Capabilities (not yet implemented)
 
-- Load balancing: Round Robin, Least Connections, Weighted Routing, Consistent Hashing
 - Reverse proxy with connection pooling and request IDs
 - Retries with exponential backoff, circuit breaker, failover
 - Redis response caching and Token Bucket rate limiting
@@ -140,6 +144,7 @@ The service registry is off by default, so this runs without a database. To use 
 | `health_check.success_threshold` | `2` | 1-100 | consecutive successes before an unhealthy instance becomes healthy |
 | `health_check.refresh_interval_ms` | `5000` | 100-3600000 | how often the registry is re-read for new, removed and disabled instances |
 | `health_check.max_concurrent_checks` | `32` | 1-1024 | probes running at the same time |
+| `routing.strategy` | `round_robin` | `round_robin`, `least_connections`, `weighted`, `consistent_hashing` | how an instance is chosen among the routable ones |
 | `shutdown.grace_period_seconds` | `5` | 0-300 | time in-flight requests get to finish on shutdown |
 
 ## Service Registry (Phase 3)
@@ -172,6 +177,7 @@ curl http://127.0.0.1:8080/services                                   # known se
 |-----------------|--------|
 | `POST /services/{service}/instances` | `201` + `Location`; body fields: `host`, `port` (required), `instance_id`, `version`, `weight` (0-1000, default 1), `status`, `health_status`, `connection_count` |
 | `GET /services/{service}/instances` | `200` `{"service","count","instances":[...]}`; `404` for a service that was never registered |
+| `GET /services/{service}/route[?key=K]` | `200` with the instance the configured strategy picks right now and the strategy name; `404` unknown service; `503` nothing routable. A routing **decision only**: nothing is forwarded and no state changes. `key` feeds consistent hashing |
 | `GET /services/{service}/routable` | `200`, same shape as discovery but only instances that are `active` AND `healthy` (Phase 4); no ordering or selection |
 | `GET /services/{service}/instances/{id}` | `200` or `404` |
 | `PATCH /services/{service}/instances/{id}` | `200`; mutable fields only (`status`, `health_status`, `version`, `weight`, `connection_count`); `400` for identity fields |
@@ -203,7 +209,7 @@ To try it locally with Docker, use two EdgeFlow containers as throwaway backends
 ```bash
 docker compose up -d --build
 for n in a b; do
-  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase4
+  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase5
   curl -X POST http://127.0.0.1:8080/services/shop/instances -H 'Content-Type: application/json'     -d "{\"instance_id\":\"$n\",\"host\":\"backend-$n\",\"port\":8080}"
 done
 curl http://127.0.0.1:8080/services/shop/routable      # within a few seconds: a and b
@@ -211,6 +217,24 @@ docker stop backend-b                                  # after the failure thres
 docker start backend-b                                 # after the success threshold: a and b again
 docker rm -f backend-a backend-b; docker compose down -v
 ```
+
+## Load Balancing (Phase 5)
+
+Set `routing.strategy` and EdgeFlow picks among the **routable** instances (`active` AND `healthy`, see Health Checking). The strategies never look at health themselves: discovery hands them the routable set.
+
+| Strategy | Behaviour |
+|----------|-----------|
+| `round_robin` | `a, b, c, a, ...` in `(service, instance_id)` order; correct when instances come and go between requests |
+| `least_connections` | the instance with the smallest `connection_count` (ties: smallest id). Phase 5 only reads the count; a proxy that maintains it is Phase 6 |
+| `weighted` | exactly `weight` of every `sum(weights)` requests per instance, smoothly interleaved (weights 5/3/2 give `a b c a a b a c b a`); weight 0 gets no share unless all are 0 |
+| `consistent_hashing` | a request `key` maps to a stable instance; adding or removing an instance moves only the keys that must move (virtual-node ring) |
+
+```bash
+curl 'http://127.0.0.1:8080/services/shop/route'                 # round robin / least connections / weighted
+curl 'http://127.0.0.1:8080/services/shop/route?key=client-42'   # consistent hashing: same key, same instance
+```
+
+This reports the decision; it does not forward the request (Phase 6). To compare strategies locally, start the Compose stack with two or three backends as in Health Checking, change `strategy:` in `config/config.compose.yaml` and recreate the `edgeflow` container.
 
 ## Testing
 
@@ -220,13 +244,13 @@ ctest --test-dir build --output-on-failure
 
 The suite covers configuration, logging, the shutdown coordinator, application lifecycle (including real SIGINT/SIGTERM), and the networking engine. Network tests are real integration tests: they start the server on an OS-assigned loopback port and talk to it over TCP, covering endpoints, parsing errors, limits, keep-alive and connection reuse, pipelining, idle and request timeouts, timer cancellation, client disconnects and resets, write failure, connection limits, graceful and forced shutdown, and 1/10/50/100 concurrent clients. These are correctness tests, not benchmarks.
 
-The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 42 tests that need a database are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
+The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 49 tests that need a database are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
 
 ## Docker
 
 ```bash
-docker build -t edgeflow:phase2 .            # builds, runs the tests, produces the runtime image
-docker run --rm -p 8080:8080 edgeflow:phase2 # HTTP server only (registry off); stop with Ctrl+C or `docker stop`
+docker build -t edgeflow:phase5 .            # builds, runs the tests, produces the runtime image
+docker run --rm -p 8080:8080 edgeflow:phase5 # HTTP server only (registry off); stop with Ctrl+C or `docker stop`
 docker compose up --build                    # PostgreSQL + EdgeFlow with the registry on; publishes ${EDGEFLOW_HTTP_PORT:-8080}
 docker compose down
 ```
@@ -249,7 +273,7 @@ No benchmarks have been run, and no performance results exist yet. Load-testing 
 | 2 | TCP/HTTP Networking Engine | Completed |
 | 3 | Service Discovery & Registry | Completed |
 | 4 | Health Checking & Dynamic Discovery | Completed |
-| 5 | Load Balancing Engine | Not started |
+| 5 | Load Balancing Engine | Completed |
 | 6 | Reverse Proxy & Request Forwarding | Not started |
 | 7 | Reliability Engineering | Not started |
 | 8 | Redis Cache & Distributed Rate Limiting | Not started |

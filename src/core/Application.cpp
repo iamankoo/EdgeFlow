@@ -117,10 +117,13 @@ bool Application::initializeRegistry(std::shared_ptr<network::RequestHandler>& h
     return false;
   }
   registry_ = std::make_shared<discovery::PostgresServiceRegistry>(std::move(pool), logger_);
-  handler = std::make_shared<network::RegistryRequestHandler>(registry_, std::move(handler),
-                                                               logger_);
+  router_ = std::make_shared<routing::Router>(registry_,
+                                              routing::makeLoadBalancer(config_.routing.strategy));
+  handler = std::make_shared<network::RegistryRequestHandler>(registry_, std::move(handler), logger_,
+                                                               router_);
   logger_->info("service registry ready (PostgreSQL {}:{}/{}, {} migration(s) applied, "
-                "pool size {})", db.host, db.port, db.name, report.applied, db.pool_size);
+                "pool size {}), routing strategy {}", db.host, db.port, db.name, report.applied,
+                db.pool_size, router_->strategy());
   return true;
 }
 

@@ -352,6 +352,26 @@ void parseHealthCheck(const YAML::Node& root, HealthCheckConfig& out, Errors& er
   }
 }
 
+void parseRouting(const YAML::Node& root, RoutingConfig& out, Errors& errors) {
+  const YAML::Node section = sectionOf(root, "routing", errors);
+  rejectUnknownKeys(section, "routing", {"strategy"}, errors);
+
+  if (auto strategy = readString(section, "routing", "strategy", errors)) {
+    if (*strategy == "round_robin") {
+      out.strategy = RoutingStrategy::RoundRobin;
+    } else if (*strategy == "least_connections") {
+      out.strategy = RoutingStrategy::LeastConnections;
+    } else if (*strategy == "weighted") {
+      out.strategy = RoutingStrategy::Weighted;
+    } else if (*strategy == "consistent_hashing") {
+      out.strategy = RoutingStrategy::ConsistentHashing;
+    } else {
+      errors.push_back("'routing.strategy' must be one of round_robin, least_connections, "
+                       "weighted, consistent_hashing (got '" + *strategy + "')");
+    }
+  }
+}
+
 void parseShutdown(const YAML::Node& root, ShutdownConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "shutdown", errors);
   rejectUnknownKeys(section, "shutdown", {"grace_period_seconds"}, errors);
@@ -421,11 +441,12 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
 
   Config parsed;
   Errors errors;
-  rejectUnknownKeys(root, "", {"application", "server", "database", "health_check", "shutdown"}, errors);
+  rejectUnknownKeys(root, "", {"application", "server", "database", "health_check", "routing", "shutdown"}, errors);
   parseApplication(root, parsed.application, errors);
   parseServer(root, parsed.server, errors);
   parseDatabase(root, parsed.database, errors);
   parseHealthCheck(root, parsed.health_check, errors);
+  parseRouting(root, parsed.routing, errors);
   if (parsed.health_check.enabled && !parsed.database.enabled) {
     errors.push_back("'health_check.enabled' requires 'database.enabled': health checking reads "
                      "instances from, and writes health to, the service registry");
@@ -455,6 +476,16 @@ std::string_view toString(HealthCheckType type) noexcept {
     case HealthCheckType::Http: return "http";
   }
   return "tcp";
+}
+
+std::string_view toString(RoutingStrategy strategy) noexcept {
+  switch (strategy) {
+    case RoutingStrategy::RoundRobin: return "round_robin";
+    case RoutingStrategy::LeastConnections: return "least_connections";
+    case RoutingStrategy::Weighted: return "weighted";
+    case RoutingStrategy::ConsistentHashing: return "consistent_hashing";
+  }
+  return "round_robin";
 }
 
 std::string_view toString(LogLevel level) noexcept {

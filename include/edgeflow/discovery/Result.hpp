@@ -12,6 +12,7 @@ enum class RegistryErrorCode {
   InstanceNotFound,     // the service exists but has no such instance
   DuplicateInstance,    // instance id or host:port already registered for the service
   DatabaseUnavailable,  // PostgreSQL cannot be reached; the operation did NOT happen
+  NoRoutableInstance,   // the service exists but no instance is active AND healthy (routing)
   Internal              // unexpected database or logic failure
 };
 
@@ -27,6 +28,7 @@ struct RegistryError {
     case RegistryErrorCode::InstanceNotFound: return "instance_not_found";
     case RegistryErrorCode::DuplicateInstance: return "duplicate_instance";
     case RegistryErrorCode::DatabaseUnavailable: return "database_unavailable";
+    case RegistryErrorCode::NoRoutableInstance: return "no_routable_instance";
     case RegistryErrorCode::Internal: return "internal";
   }
   return "internal";

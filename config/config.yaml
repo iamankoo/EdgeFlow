@@ -43,5 +43,9 @@ health_check:
   refresh_interval_ms: 5000   # 100..3600000; how often the registry is re-read for new/removed/disabled instances
   max_concurrent_checks: 32  # 1..1024
 
+routing:
+  # Phase 5: how an instance is chosen among the routable (active AND healthy) ones.
+  strategy: round_robin      # round_robin | least_connections | weighted | consistent_hashing
+
 shutdown:
   grace_period_seconds: 5    # 0..300; in-flight requests may finish within this time

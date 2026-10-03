@@ -5,6 +5,7 @@
 #include "edgeflow/discovery/ServiceRegistry.hpp"
 #include "edgeflow/logging/Logger.hpp"
 #include "edgeflow/network/RequestHandler.hpp"
+#include "edgeflow/routing/Router.hpp"
 
 namespace edgeflow::network {
 
@@ -17,6 +18,10 @@ namespace edgeflow::network {
 //   GET    /services/{service}/instances              discover   -> 200 (404 unknown service)
 //   GET    /services/{service}/routable               only instances routing may use:
 //                                                      active AND healthy (Phase 4)
+//   GET    /services/{service}/route[?key=K]          the instance the configured routing
+//                                                      strategy picks right now (Phase 5). A
+//                                                      routing DECISION only: nothing is
+//                                                      forwarded (that is Phase 6)
 //   GET    /services/{service}/instances/{instance}   one instance
 //   PATCH  /services/{service}/instances/{instance}   update mutable metadata
 //   DELETE /services/{service}/instances/{instance}   deregister -> 204
@@ -28,9 +33,11 @@ namespace edgeflow::network {
 // that means a worker blocks for the duration of a query; see architecture.md.
 class RegistryRequestHandler final : public RequestHandler {
  public:
+  // `router` may be null, in which case /route answers 404.
   RegistryRequestHandler(std::shared_ptr<discovery::ServiceRegistry> registry,
                          std::shared_ptr<RequestHandler> next,
-                         std::shared_ptr<logging::Logger> logger);
+                         std::shared_ptr<logging::Logger> logger,
+                         std::shared_ptr<routing::Router> router = nullptr);
 
   [[nodiscard]] HttpResponse handle(const HttpRequest& request) override;
 
@@ -38,6 +45,7 @@ class RegistryRequestHandler final : public RequestHandler {
   std::shared_ptr<discovery::ServiceRegistry> registry_;
   std::shared_ptr<RequestHandler> next_;
   std::shared_ptr<logging::Logger> logger_;
+  std::shared_ptr<routing::Router> router_;
 };
 
 }  // namespace edgeflow::network

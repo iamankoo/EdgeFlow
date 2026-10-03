@@ -22,7 +22,7 @@ The stack below is **locked**. No technology may be substituted or added without
 | Load testing | wrk, custom C++ load generators | Planned (Phase 9) | wrk for raw HTTP throughput; custom tools where wrk cannot model the scenario. |
 | CI | GitHub Actions | Phase 1 active | Automated build and test on every push. |
 
-## Load-balancing algorithms (locked)
+## Load-balancing algorithms (locked, implemented in Phase 5)
 
 1. Round Robin
 2. Least Connections
@@ -43,4 +43,5 @@ All four will be implemented (Phase 5) behind one strategy abstraction so they c
 | PostgreSQL client | libpq (the PostgreSQL C client library; `libpq-dev` to build, `libpq5` at runtime) used directly through a thin RAII wrapper with parameterised statements; no ORM or additional database framework. Server: `postgres:16` in Docker Compose |
 | Schema management | Plain SQL files in `db/migrations/`, embedded into the binary at build time and applied at startup by a small migrator (`schema_migrations` table, advisory lock) |
 | Health probing | Boost.Asio timers, resolver and sockets (TCP connect) and Boost.Beast (HTTP request and response head) on a private `io_context` thread; blocking PostgreSQL calls on a separate one-thread Asio pool. Host names are resolved by a small per-host-isolated resolver (blocking `getaddrinfo` on detached threads, capped). No new dependency |
+| Load balancing | Four strategies behind one `LoadBalancer` abstraction, standard library only: smooth weighted round-robin; a consistent-hash ring with 160 virtual nodes and a platform-independent 64-bit hash (FNV-1a + murmur3 finaliser). No new dependency |
 | Minimum CMake | 3.25 |

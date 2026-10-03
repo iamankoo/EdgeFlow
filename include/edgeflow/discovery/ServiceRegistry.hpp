@@ -42,7 +42,8 @@ class ServiceRegistry {
   [[nodiscard]] virtual Result<ServiceInstance> getInstance(std::string_view service,
                                                             std::string_view instance_id) = 0;
 
-  // Names of all known services, sorted.
+  // Names of all known services in byte order (locale-independent, so the order is the same
+  // on every database).
   [[nodiscard]] virtual Result<std::vector<std::string>> listServices() = 0;
 
   // Applies the mutable fields that are present. Identity (service, instance id, host,

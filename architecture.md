@@ -1,6 +1,6 @@
 # EdgeFlow — Architecture
 
-> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation), 18 (Phase 2: networking engine), 19 (Phase 3: service discovery and registry) and 20 (Phase 4: health checking) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
+> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation), 18 (Phase 2: networking engine), 19 (Phase 3: service discovery and registry) and 20 (Phase 4: health checking) and 21 (Phase 5: load balancing) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
 
 ## 1. High-Level Architecture
 
@@ -73,7 +73,7 @@ Instances are registered, updated and deregistered. PostgreSQL is the persistent
 
 ## 6. Load-Balancing Flow
 
-`Router` holds a `LoadBalancingStrategy` (Round Robin, Least Connections, Weighted Routing, Consistent Hashing). It receives only healthy instances and returns a selection. Consistent Hashing uses a request key (e.g. client IP or header). Strategy is selected via configuration.
+`Router` holds a `LoadBalancingStrategy` (Round Robin, Least Connections, Weighted Routing, Consistent Hashing). It receives only healthy instances and returns a selection. Consistent Hashing uses a request key (e.g. client IP or header). Strategy is selected via configuration. Implemented in Phase 5 (section 21); the router is not yet in the request path because forwarding is Phase 6.
 
 ## 7. Reverse-Proxy Flow
 
@@ -393,3 +393,52 @@ Every `refresh_interval_ms` the checker re-reads the registry with one `listInst
 ### Limitations
 
 One probe type applies to all instances (`health_check.type`); the instance model has no per-instance check settings. The routable view is a database query on each call: it is correct and always current but is not the cached, lock-light view that request-path routing may want (a Phase 5 concern, to be measured first).
+
+## 21. Phase 5 Implementation: Load Balancing Engine
+
+### Implemented in Phase 5
+
+```text
+include/edgeflow/routing/  LoadBalancer  Strategies (RoundRobin, LeastConnections, WeightedRouting, ConsistentHashing)  Router
+src/routing/               matching implementations
+```
+
+```text
+ServiceRegistry::lookupRoutable(service)    active AND healthy instances (Phase 4), one snapshot
+        |
+        v
+LoadBalancer::select(snapshot, {key})       the configured strategy picks ONE
+        |
+        v
+selected instance                           [Phase 6 will forward the request to it]
+```
+
+| Component | Responsibility |
+|-----------|----------------|
+| `LoadBalancer` | The abstraction all four strategies implement: `select(instances, context)` returns a pointer to one element of the given set, or null when it is empty. Non-virtual `select` + virtual `doSelect` (the empty set is handled once, centrally). |
+| `RoundRobin`, `LeastConnections`, `WeightedRouting`, `ConsistentHashing` | The four strategies. They are pure: no registry, no database, no health logic, no HTTP. |
+| `Router` | The glue for one request: reads the routable set from the registry, then asks the strategy. Returns the chosen instance or `ServiceNotFound` / `NoRoutableInstance` / the registry's own error. It does not forward anything. |
+| `makeLoadBalancer(config::RoutingStrategy)` | The factory behind `routing.strategy`. |
+
+### Responsibility boundary
+
+Health and registration eligibility belong to discovery (Phase 4). The strategies receive the routable set and choose among it; none of them inspects `health` or `status`, so an excluded instance cannot be chosen by any of them, and a recovered one is chosen again as soon as discovery lists it. Strategies never see PostgreSQL: the router takes one snapshot from `lookupRoutable` and no registry access or lock is held while choosing.
+
+### Instance identity and ordering
+
+An instance is identified by `(service, instance_id)`: never by its position in the input, its address in memory, or mutable metadata. Every strategy first puts the input into canonical order of that identity (an instance listed twice counts once), so the order in which discovery returns instances has no effect on any strategy. The hash input for consistent hashing is the text `service/instance_id` (neither part can contain `/`).
+
+### The strategies
+
+- **Round Robin** cycles `a, b, c, a, ...` in canonical order. Its only state is the identity of the instance chosen last; the next choice is the first instance with a greater identity, wrapping to the smallest. A removed instance is skipped and a new one joins where its position falls, so the cycle stays correct when the set changes between calls. One mutex guards that value, so concurrent callers share one strict cycle (tested: 24 000 concurrent selections over 3 instances give exactly 8 000 each).
+- **Least Connections** picks the smallest `connection_count`, ties to the smallest identity. It is stateless and reads the count from the snapshot it is given. **Semantics:** Phase 5 only READS this field. It is whatever was written through the registry (`updateInstance`, `adjustConnectionCount`). The proxy that opens and closes backend connections and keeps the count current is Phase 6, so a routing decision does not change the count (it is not a connection) and, until Phase 6, the count is only as current as the writes made to it.
+- **Weighted** uses smooth weighted round-robin (as nginx): over any window of (sum of weights) selections of an unchanged set each instance is chosen exactly `weight` times, interleaved rather than in bursts, with no randomness. Weights 5/3/2 give the sequence `abcaabacba`. Weight 0 means no share while any instance has a positive weight; if every weight is 0 the instances are treated as equal rather than refusing to route. Weights are summed in 64 bits. State is a running score per instance, pruned to the current set on every call.
+- **Consistent Hashing** places each instance at 160 virtual points on a 64-bit ring (`stableHash("service/instance_id#replica")`; FNV-1a plus a murmur3 finaliser, identical on every platform) and serves a key from the first point at or after `stableHash(key)`. The ring is immutable and cached; it is rebuilt only when the set of identities differs from the cached one, and selection works on a shared snapshot. Adding an instance moves keys only to it; removing one moves only its keys (both verified by tests, with about 1/N of the keys moving). Weights are not used. **Key semantics:** the key is supplied by the caller (`RoutingContext::key`); an empty key is hashed like any other, so keyless requests all land on one instance. The other strategies ignore the key.
+
+### Configuration and the decision endpoint
+
+`routing.strategy` is one of `round_robin` (default), `least_connections`, `weighted`, `consistent_hashing`; anything else, or an unknown key in the section, is a startup error. With the registry enabled the application builds a `Router` over it. `GET /services/{service}/route[?key=K]` returns the instance the strategy picks right now, together with the strategy name: `200`, `404` unknown service, `503` when the service has no routable instance. **It is a routing decision only**: nothing is forwarded and no state changes. It exists to observe and test routing in a running system until Phase 6 uses `Router::route` for every proxied request.
+
+### Limitations before Phase 6
+
+No request is forwarded to the selected instance. `connection_count` is not maintained by EdgeFlow yet. The routable set is read from PostgreSQL for each decision (correct and current, but not the cached view a high-rate proxy may want; to be measured, not assumed, in Phase 9). One strategy applies to all services.

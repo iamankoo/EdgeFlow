@@ -1,6 +1,6 @@
 # EdgeFlow — Development Phases
 
-**Current Phase: Phase 4 completed — awaiting Phase 5 requirements**
+**Current Phase: Phase 5 completed — awaiting Phase 6 requirements**
 
 This document is the authoritative roadmap. Phases must not be skipped. A phase begins only after the previous phase has met its exit condition. Later-phase functionality must not be implemented early unless strictly required as a dependency and clearly documented.
 
@@ -12,7 +12,7 @@ Before implementing a phase, its detailed implementation prompt must be cross-ch
 | 2 | TCP/HTTP Networking Engine | Completed |
 | 3 | Service Discovery & Registry | Completed |
 | 4 | Health Checking & Dynamic Discovery | Completed |
-| 5 | Load Balancing Engine | Not started |
+| 5 | Load Balancing Engine | Completed |
 | 6 | Reverse Proxy & Request Forwarding | Not started |
 | 7 | Reliability Engineering | Not started |
 | 8 | Redis Cache & Distributed Rate Limiting | Not started |
@@ -119,6 +119,8 @@ Implement:
 The algorithms must operate through a clean routing abstraction.
 
 **Exit condition:** Requests can be distributed among healthy backend instances using all four strategies.
+
+**Completion summary:** Met. A `LoadBalancer` abstraction with Round Robin, Least Connections, Weighted Routing (smooth weighted round-robin) and Consistent Hashing (virtual-node ring) chooses among the routable (active AND healthy) instances that discovery supplies, selected by `routing.strategy`. Verified with real backend containers in Docker Compose against PostgreSQL and the real health checker: all four strategies distributed decisions only among healthy instances, an unhealthy instance with the most attractive numbers was never chosen, and failure, recovery and instance changes were followed. 379 tests pass with GCC 13 (Debug and Release) and Clang 18 (`-Werror`) against PostgreSQL (49 are skipped when no database is available). Requests are not yet forwarded to the selected instance (Phase 6) and `connection_count` is not yet maintained by a proxy. No performance figures were measured. See `summary.md`.
 
 ---
 

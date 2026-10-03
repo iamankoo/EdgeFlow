@@ -290,7 +290,7 @@ Result<ServiceInstance> PostgresServiceRegistry::getInstanceOnce(std::string_vie
 Result<std::vector<std::string>> PostgresServiceRegistry::listServicesOnce() {
   auto lease = pool_->acquire();
   if (!lease) return unavailable(*logger_, "list", lease.error());
-  const auto result = lease->exec("SELECT name FROM services ORDER BY name");
+  const auto result = lease->exec("SELECT name FROM services ORDER BY name COLLATE \"C\"");
   if (!result.ok()) return toRegistryError(result, *lease, *logger_, "list");
   std::vector<std::string> names;
   names.reserve(static_cast<std::size_t>(result.rows()));

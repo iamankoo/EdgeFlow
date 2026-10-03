@@ -18,6 +18,9 @@ add_executable(edgeflow_tests
   network/RegistryApiTest.cpp
   network/RequestHandlerTest.cpp
   network/TcpServerTest.cpp
+  routing/RoutingPostgresTest.cpp
+  routing/RouterTest.cpp
+  routing/StrategyTest.cpp
   storage/PostgresTest.cpp)
 
 target_include_directories(edgeflow_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

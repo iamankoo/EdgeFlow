@@ -47,6 +47,12 @@ add_library(edgeflow_core STATIC
   network/LocalRequestHandler.cpp
   network/RegistryRequestHandler.cpp
   network/TcpServer.cpp
+  routing/ConsistentHashing.cpp
+  routing/LeastConnections.cpp
+  routing/LoadBalancer.cpp
+  routing/RoundRobin.cpp
+  routing/Router.cpp
+  routing/WeightedRouting.cpp
   storage/Migrator.cpp
   storage/Postgres.cpp
   "${EDGEFLOW_MIGRATIONS_SOURCE}")

@@ -430,4 +430,48 @@ TEST(ApplicationHealthCheckTest, RunsAgainstPostgresAndStopsBeforeShutdownComple
   EXPECT_LT(checker_stopped, completed);
 }
 
+TEST(ApplicationRoutingTest, NoRouterWithoutTheRegistry) {
+  CapturedLogger log;
+  Application app(testConfig(), log.logger(), kNoSignals);
+  ASSERT_TRUE(app.initialize());
+  EXPECT_EQ(app.router(), nullptr);
+  TestClient client(app.httpPort());
+  EXPECT_EQ(client.get("/services/shop/route")->result(), http::status::not_found);
+}
+
+TEST(ApplicationRoutingTest, ConfiguredStrategyIsUsedByTheRunningApplication) {
+  EDGEFLOW_REQUIRE_TEST_DATABASE();
+  for (const auto strategy : {edgeflow::config::RoutingStrategy::RoundRobin, edgeflow::config::RoutingStrategy::LeastConnections,
+                              edgeflow::config::RoutingStrategy::Weighted, edgeflow::config::RoutingStrategy::ConsistentHashing}) {
+    CapturedLogger log;
+    auto config = testConfig();
+    config.database.enabled = true;
+    config.database.host = test_db_params->host;
+    config.database.port = test_db_params->port;
+    config.database.name = test_db_params->database;
+    config.database.user = test_db_params->user;
+    config.database.password_env = "EDGEFLOW_TEST_DB_PASSWORD";
+    config.routing.strategy = strategy;
+    Application app(config, log.logger(), kNoSignals);
+    ASSERT_TRUE(app.initialize()) << log.output();
+    ASSERT_NE(app.router(), nullptr);
+    const std::string name{edgeflow::config::toString(strategy)};
+    EXPECT_EQ(app.router()->strategy(), name);
+    EXPECT_TRUE(log.contains("routing strategy " + name));
+
+    const std::string service = edgeflow::testing::uniqueName("approute");
+    TestClient client(app.httpPort());
+    ASSERT_EQ(client.request(http::verb::post, "/services/" + service + "/instances",
+                             R"({"instance_id":"x","host":"10.0.0.1","port":9000,"health_status":"healthy"})")
+                  ->result(),
+              http::status::created);
+    const auto routed = client.get("/services/" + service + "/route?key=k");
+    ASSERT_TRUE(routed);
+    EXPECT_EQ(routed->result(), http::status::ok) << routed->body();
+    EXPECT_NE(routed->body().find("\"strategy\":\"" + name + "\""), std::string::npos);
+    EXPECT_EQ(client.request(http::verb::delete_, "/services/" + service + "/instances/x")->result(),
+              http::status::no_content);
+  }
+}
+
 }  // namespace

@@ -1,5 +1,6 @@
 #include "edgeflow/network/RegistryRequestHandler.hpp"
 
+#include <cctype>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -52,7 +53,8 @@ http::status statusFor(RegistryErrorCode code) {
     case RegistryErrorCode::ServiceNotFound:
     case RegistryErrorCode::InstanceNotFound: return http::status::not_found;
     case RegistryErrorCode::DuplicateInstance: return http::status::conflict;
-    case RegistryErrorCode::DatabaseUnavailable: return http::status::service_unavailable;
+    case RegistryErrorCode::DatabaseUnavailable:
+    case RegistryErrorCode::NoRoutableInstance: return http::status::service_unavailable;
     case RegistryErrorCode::Internal: return http::status::internal_server_error;
   }
   return http::status::internal_server_error;
@@ -248,6 +250,37 @@ ParsedUpdate parseUpdate(const HttpRequest& request) {
 
 // --- routing ----------------------------------------------------------------------
 
+// Value of the query parameter `name`, percent-decoded; empty when absent.
+std::string queryValue(std::string_view target, std::string_view name) {
+  const auto question = target.find('?');
+  if (question == std::string_view::npos) return {};
+  std::string_view query = target.substr(question + 1);
+  while (!query.empty()) {
+    const auto amp = query.find('&');
+    const std::string_view pair = query.substr(0, amp);
+    const auto eq = pair.find('=');
+    if (pair.substr(0, eq) == name) {
+      const std::string_view raw = eq == std::string_view::npos ? std::string_view{} : pair.substr(eq + 1);
+      std::string decoded;
+      for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] == '%' && i + 2 < raw.size() && std::isxdigit(static_cast<unsigned char>(raw[i + 1])) != 0 &&
+            std::isxdigit(static_cast<unsigned char>(raw[i + 2])) != 0) {
+          decoded += static_cast<char>(std::stoi(std::string{raw.substr(i + 1, 2)}, nullptr, 16));
+          i += 2;
+        } else if (raw[i] == '+') {
+          decoded += ' ';
+        } else {
+          decoded += raw[i];
+        }
+      }
+      return decoded;
+    }
+    if (amp == std::string_view::npos) break;
+    query.remove_prefix(amp + 1);
+  }
+  return {};
+}
+
 std::string_view pathOf(std::string_view target) {
   const auto query = target.find('?');
   return query == std::string_view::npos ? target : target.substr(0, query);
@@ -275,8 +308,12 @@ std::vector<std::string_view> split(std::string_view path) {
 
 RegistryRequestHandler::RegistryRequestHandler(std::shared_ptr<discovery::ServiceRegistry> registry,
                                                std::shared_ptr<RequestHandler> next,
-                                               std::shared_ptr<logging::Logger> logger)
-    : registry_(std::move(registry)), next_(std::move(next)), logger_(std::move(logger)) {}
+                                               std::shared_ptr<logging::Logger> logger,
+                                               std::shared_ptr<routing::Router> router)
+    : registry_(std::move(registry)),
+      next_(std::move(next)),
+      logger_(std::move(logger)),
+      router_(std::move(router)) {}
 
 HttpResponse RegistryRequestHandler::handle(const HttpRequest& request) {
   const std::string_view path = pathOf(request.target());
@@ -303,6 +340,23 @@ HttpResponse RegistryRequestHandler::handle(const HttpRequest& request) {
     for (const auto& instance : instances.value()) list.push_back(toJson(instance));
     return jsonResponse(request, http::status::ok,
                         {{"service", service}, {"count", list.size()}, {"instances", list}});
+  }
+
+  // /services/{service}/route[?key=K]: the routing decision for one request.
+  if (segments.size() == 3 && segments[2] == "route" && !segments[1].empty()) {
+    if (method != http::verb::get) return methodNotAllowed(request, "GET");
+    if (!router_) {
+      return errorResponse(request, http::status::not_found, "routing is not available");
+    }
+    const std::string service{segments[1]};
+    const std::string key = queryValue(request.target(), "key");
+    auto chosen = router_->route(service, routing::RoutingContext{key});
+    if (!chosen) return fromError(request, chosen.error());
+    return jsonResponse(request, http::status::ok,
+                        {{"service", service},
+                         {"strategy", std::string{router_->strategy()}},
+                         {"key", key},
+                         {"selected", toJson(chosen.value())}});
   }
 
   // /services/{service}/instances[/{instance}]

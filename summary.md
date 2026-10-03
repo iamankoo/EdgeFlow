@@ -30,8 +30,8 @@ What this requires the project to actually produce:
 
 ## Current State
 
-- **Current phase:** Phase 4 — Health Checking & Dynamic Discovery — **COMPLETED** (Phase 1: `8b5c6f0`; Phase 2: `71ed967`; Phase 3: `f6f905d`; Phase 4: commit `feat: implement EdgeFlow phase 4 health checking`, hash in git history)
-- **Next:** Phase 5 — Load Balancing Engine — **NOT STARTED**; begins only when the owner provides its prompt, cross-checked against `Phases.md`.
+- **Current phase:** Phase 5 — Load Balancing Engine — **COMPLETED** (Phase 1: `8b5c6f0`; Phase 2: `71ed967`; Phase 3: `f6f905d`; Phase 4: `c4817ad`; Phase 5: commit `feat: implement EdgeFlow phase 5 load balancing`, hash in git history)
+- **Next:** Phase 6 — Reverse Proxy & Request Forwarding — **NOT STARTED**; begins only when the owner provides its prompt, cross-checked against `Phases.md`.
 - **Last updated:** 2026-10-03
 
 ## Entry Template
@@ -142,6 +142,25 @@ What this requires the project to actually produce:
 - **Defects found and fixed during validation:** head-of-line blocking in name resolution (above; found by the Compose validation, covered by `ProberIsolationTest`); a test helper deadlock (closing a listening socket does not wake a blocked `accept` on Linux); an error-classification slip (a connection closed before a response was labelled malformed); tests that compared the checker's tracked count with one service instead of the whole registry.
 - **Exit condition met:** yes — routing (the routable view) excluded unhealthy instances and reintroduced recovered ones automatically, demonstrated with real TCP and HTTP backends against PostgreSQL, in tests and in Docker Compose.
 - **Next step:** Phase 5 once the owner provides its prompt; cross-check it against `Phases.md` first.
+
+### Phase 5 — Load Balancing Engine (completed 2026-10-03)
+- **Commit(s):** `feat: implement EdgeFlow phase 5 load balancing` (single commit on `main`; hash recorded in git history)
+- **What was built:** A `LoadBalancer` abstraction with four strategies (Round Robin, Least Connections, Weighted Routing, Consistent Hashing), a `Router` that reads the routable set from the registry and asks the strategy, the `routing.strategy` configuration and factory, a `NoRoutableInstance` error, and a diagnostic endpoint `GET /services/{service}/route[?key=K]` that reports the decision (nothing is forwarded).
+- **Key files / modules:** `include/edgeflow/routing/{LoadBalancer,Strategies,Router}.hpp`, `src/routing/*`, `tests/routing/{StrategyTest,RouterTest,RoutingPostgresTest}.cpp`.
+- **Design decisions:**
+  - Responsibility boundary: discovery decides who is eligible (active AND healthy, Phase 4); strategies only choose among the set they are given and contain no health, registration, database or HTTP logic. The router takes one snapshot per decision and holds no lock or connection while choosing.
+  - Identity is `(service, instance_id)`; every strategy canonicalises the input by it, so input order never matters and duplicates count once. Selection returns a pointer into the caller's set (null when empty).
+  - Round Robin remembers the identity chosen last (not an index), so the cycle survives instances coming and going. Weighted is smooth weighted round-robin: exact proportions, deterministic, 64-bit sums; weight 0 gets no share unless every weight is 0 (then equal). Consistent Hashing: immutable ring, 160 virtual nodes, platform-stable hash (FNV-1a + murmur3 finaliser), rebuilt only when the identity set changes; weights unused; empty key is an ordinary key.
+  - Least Connections only READS `connection_count`; maintaining it belongs to the Phase 6 proxy, and a routing decision does not change it. Documented limitation.
+  - `RegistryErrorCode::NoRoutableInstance` (HTTP 503) separates "service exists but nothing is routable" from "unknown service" (404).
+  - `listServices` now orders with `COLLATE "C"` so the order does not depend on the database locale.
+- **Tests run and results:** 379/379 CTest tests pass against a real PostgreSQL 16 with GCC 13 Debug `-Werror`, GCC 13 Release `-Werror` and Clang 18 Debug `-Werror`; the 183 health-checking and routing tests passed 10 consecutive runs on GCC Debug (68 on Release). Without a database 330 pass and 49 are reported as skipped (the Docker image build runs in that mode). Coverage: shared contract tests run against all four strategies (empty and single sets, pointer into the caller's set, input untouched, only members of the given set chosen, input-order independence, sets changing between calls, 8 threads), then per strategy: exact cycles and set changes and a concurrent strict cycle (Round Robin); minimum, tie-breaking and changing counts (Least Connections); exact 5/3/2 windows, 100 000-sample proportions, zero and all-zero and overflow-sized weights, re-weighting and concurrent exactness (Weighted); stickiness, spread, add-moves-only-to-new, remove-moves-only-its-keys, restore, virtual-node effect and a concurrently rebuilt ring (Consistent Hashing); the router with A, B, C healthy and D unhealthy for every strategy, draining and disabled instances, recovery, distinct error cases, configuration validation, the HTTP endpoint, and an end-to-end chain with real PostgreSQL + the real health checker + real TCP backends.
+- **Runtime validation (Docker Compose, real PostgreSQL, health checker, four backend containers; 20/20 checks):** Round Robin gave `abcabcabc`; Least Connections chose b (a=5, b=2, c=7), followed the count to a when b went to 8 and back; Weighted over 1000 requests gave exactly 500/300/200 for weights 5/3/2; Consistent Hashing mapped 400 keys stably over a, b, c, adding a fourth instance moved 94 keys, all to it, a failed instance (b) was never selected and only its 103 keys moved, and its recovery restored exactly its old keys. Backend d (HTTP 500, with the best-looking weight 9 and 0 connections) was excluded by health checking and never selected by any strategy.
+- **Measured results:** None. These are correctness checks, not benchmarks; no throughput or latency numbers exist.
+- **Known issues / deviations from Phases.md:** None. Requests are not forwarded to the selected instance (Phase 6); `connection_count` is not maintained by EdgeFlow until the proxy exists; the routable set is read from PostgreSQL per decision (not cached); one strategy applies to all services. The remote GitHub Actions run has not been confirmed.
+- **Defects found and fixed during validation:** `listServices` order depended on the database collation (found when Clang/Release runs met a table with more varied names; fixed with `COLLATE "C"`); a wrong hand-computed expectation for the weighted sequence in a test (the implementation was right: ties go to the smaller identity).
+- **Exit condition met:** yes — requests (routing decisions) were distributed among healthy backend instances with all four strategies, in tests and on real containers, and unhealthy instances were never chosen.
+- **Next step:** Phase 6 once the owner provides its prompt; cross-check it against `Phases.md` first.
 
 ## Environment Notes
 

@@ -26,7 +26,7 @@ services:
   edgeflow:
     build:
       context: .
-    image: edgeflow:phase4
+    image: edgeflow:phase5
     container_name: edgeflow
     restart: "no"
     depends_on:

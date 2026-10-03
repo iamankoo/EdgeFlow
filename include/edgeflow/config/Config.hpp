@@ -48,6 +48,8 @@ struct DatabaseConfig {
 
 enum class HealthCheckType { Tcp, Http };
 
+enum class RoutingStrategy { RoundRobin, LeastConnections, Weighted, ConsistentHashing };
+
 // Active health checking of registered service instances (Phase 4). Requires the service
 // registry (`database.enabled`): it reads the instances from it and writes health back.
 struct HealthCheckConfig {
@@ -70,6 +72,11 @@ struct HealthCheckConfig {
   unsigned max_concurrent_checks{32};
 };
 
+// How an instance is chosen among the routable ones (Phase 5).
+struct RoutingConfig {
+  RoutingStrategy strategy{RoutingStrategy::RoundRobin};
+};
+
 struct ShutdownConfig {
   std::chrono::seconds grace_period{5};
 };
@@ -79,11 +86,13 @@ struct Config {
   ServerConfig server;
   DatabaseConfig database;
   HealthCheckConfig health_check;
+  RoutingConfig routing;
   ShutdownConfig shutdown;
 };
 
 [[nodiscard]] std::string_view toString(Environment environment) noexcept;
 [[nodiscard]] std::string_view toString(LogLevel level) noexcept;
 [[nodiscard]] std::string_view toString(HealthCheckType type) noexcept;
+[[nodiscard]] std::string_view toString(RoutingStrategy strategy) noexcept;
 
 }  // namespace edgeflow::config
