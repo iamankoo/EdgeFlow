@@ -1,4 +1,5 @@
-# EdgeFlow configuration.
+# EdgeFlow configuration for docker compose: the shipped config.yaml with the service
+# registry enabled and pointed at the "postgres" service.
 # Unknown keys are rejected so that typos are caught at startup.
 
 application:
@@ -18,11 +19,10 @@ server:
 
 database:
   # Phase 3 service registry. PostgreSQL is the persistent source of service metadata.
-  # Disabled here so EdgeFlow still starts without a database; config.compose.yaml (used by
-  # docker compose) enables it. When enabled, startup connects, applies schema migrations,
-  # and fails if the database is unreachable.
-  enabled: false
-  host: 127.0.0.1            # PostgreSQL address
+  # Enabled for docker compose: startup connects, applies schema migrations, and fails if
+  # the database is unreachable.
+  enabled: true
+  host: postgres             # PostgreSQL address (the Compose service name)
   port: 5432                 # 1..65535
   name: edgeflow             # database name
   user: edgeflow

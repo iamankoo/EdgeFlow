@@ -1,6 +1,6 @@
 # EdgeFlow — Architecture
 
-> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation) and 18 (Phase 2: networking engine) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
+> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation), 18 (Phase 2: networking engine) and 19 (Phase 3: service discovery and registry) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
 
 ## 1. High-Level Architecture
 
@@ -65,7 +65,7 @@ src/
 
 ## 4. Service Discovery Flow
 
-Instances are registered, updated and deregistered. PostgreSQL is the persistent source of metadata. `ServiceRegistry` loads instances and refreshes periodically, keeping an in-memory view for lock-light lookups on the request path.
+Instances are registered, updated and deregistered. PostgreSQL is the persistent source of metadata. Phase 3 implements this against PostgreSQL directly (section 19). The in-memory view that is refreshed periodically for lock-light lookups on the request path is part of Phase 4 and is not implemented yet.
 
 ## 5. Health-Check Flow
 
@@ -262,3 +262,66 @@ The image exposes the configured port (default 8080) and has a real `HEALTHCHECK
 ### Planned in later phases
 
 Service discovery, health checking of backends, load balancing, reverse proxying, reliability features, Redis caching and rate limiting, metrics and tracing.
+
+## 19. Phase 3 Implementation: Service Discovery & Registry
+
+### Implemented in Phase 3
+
+```text
+include/edgeflow/discovery/  ServiceInstance  ServiceRegistry  PostgresServiceRegistry  Validation  Result
+include/edgeflow/storage/    Postgres (PgConnection, PgPool, PgResult)  Migrator
+include/edgeflow/network/    RegistryRequestHandler
+src/discovery/ src/storage/ src/network/RegistryRequestHandler.cpp   matching implementations
+db/migrations/               SQL schema, embedded into the binary at build time
+```
+
+| Component | Responsibility |
+|-----------|----------------|
+| `ServiceInstance` | One backend instance of a logical service: identity (`service`, `instance_id`, `host`, `port`; immutable) plus mutable metadata (`status`, `health`, `version`, `weight`, `connection_count`) and database-assigned timestamps. |
+| `ServiceRegistry` | Abstract discovery interface: `registerInstance`, `deregisterInstance`, `lookupService`, `getInstance`, `listServices`, `updateInstance`, `adjustConnectionCount`. It knows nothing about HTTP, routing or health probing; Phases 4, 5 and 6 consume it. |
+| `PostgresServiceRegistry` | The implementation. PostgreSQL is the only store: there is no in-memory copy, so reads always see what is persisted and a restart loses nothing. |
+| `PgPool` / `PgConnection` / `PgResult` | A thin RAII wrapper over libpq: fixed-size pool of lazily opened connections, parameterised statements only (`PQexecParams`), SQLSTATE and constraint name exposed for error mapping. |
+| `migrate()` | Applies the embedded migrations in order, each in a transaction, recorded in `schema_migrations`, serialised across processes by a PostgreSQL advisory lock. Idempotent. |
+| `RegistryRequestHandler` | JSON API under `/services`. A decorator over the Phase 2 handler: everything else is passed through unchanged. |
+
+### Model and semantics
+
+- **Service vs instance.** A service is a logical name (`user-service`, lowercase `[a-z0-9._-]`, 1-64 chars). An instance is one concrete endpoint of it (`user-service @ 10.0.0.11:9001`). A service has any number of instances. Identity is `(service, instance_id)`; `instance_id` is supplied by the caller or assigned by the database.
+- **Two different statuses.** `status` is the *registration* state set by whoever manages the deployment: `active` (default), `draining`, `disabled`. `health_status` is the *last known health*: `unknown` (default), `healthy`, `unhealthy`. Phase 3 never probes anything: health is stored metadata, written at registration or through `PATCH`. Phase 4 will own the transitions.
+- **Duplicates are rejected, not overwritten.** Registering an `(service, instance_id)` or `(service, host, port)` that already exists returns `DuplicateInstance` (HTTP 409). Registration is not an idempotent upsert, so two deployments can never silently replace each other; changing metadata is an explicit update. The same `host:port` may exist under a different service.
+- **Deregistration deletes the row.** A second deregistration returns not-found (404). The service name stays known with zero instances, so discovery of an emptied service returns an empty list (200) while a never-registered service is 404.
+- **Mutable vs immutable.** `status`, `health_status`, `version`, `weight` (0-1000) and `connection_count` are mutable. `service`, `instance_id`, `host` and `port` are immutable; a moved instance is deregistered and registered again. `PATCH` rejects immutable and unknown fields.
+- **`weight`** is stored metadata for Phase 5's weighted routing; nothing routes on it yet.
+- **`connection_count`** is the number of in-flight requests to an instance. Phase 3 stores it and offers `updateInstance` (set) and `adjustConnectionCount` (atomic add, clamped at zero, safe under concurrency). Phase 6's proxy will maintain it and Phase 5's Least Connections will read it.
+
+### Schema (`db/migrations/001_service_registry.sql`)
+
+`services(id, name UNIQUE, created_at)` and `service_instances(id, service_id -> services ON DELETE CASCADE, instance_id, host, port, status, health_status, version, weight, connection_count, registered_at, updated_at)`. Constraints: `UNIQUE (service_id, instance_id)` (identity), `UNIQUE (service_id, host, port)` (endpoint), and CHECKs for the name and id formats, port range, status and health vocabularies, version length, weight range and non-negative connection count. The application validates the same rules first; the CHECKs are the backstop. Normal discovery is one statement (`services LEFT JOIN service_instances`, served by the identity index through its `service_id` prefix), with no per-instance queries.
+
+### Concurrency and failure handling
+
+- Each operation is one parameterised statement, atomic on the server, run on a pooled connection; the registry holds no shared mutable state, so it needs no locks. PostgreSQL's constraints decide races: of N simultaneous registrations of one instance id exactly one wins and the rest get `DuplicateInstance`.
+- A failed or unreachable database is never reported as success. Errors map to `DatabaseUnavailable` (HTTP 503), `InvalidArgument` (400), `ServiceNotFound`/`InstanceNotFound` (404), `DuplicateInstance` (409) or `Internal` (500).
+- A pooled connection that the server closed while idle (restart, failover) is detected before use and replaced. If a connection dies mid-statement, reads (lookup, get, list) are retried once because they are idempotent; writes are not retried, because it is unknown whether they committed, so they report `DatabaseUnavailable` and the caller decides.
+- Passwords are never logged and never appear in configuration: `database.password_env` names the environment variable that holds it.
+
+### HTTP registry API
+
+```text
+GET    /services                                  list service names
+POST   /services/{service}/instances              register       -> 201 + Location
+GET    /services/{service}/instances              discover       -> 200 (404 unknown service)
+GET    /services/{service}/instances/{instance}   one instance
+PATCH  /services/{service}/instances/{instance}   update mutable metadata
+DELETE /services/{service}/instances/{instance}   deregister     -> 204
+```
+
+This is registry management only. EdgeFlow does not forward client traffic to the registered instances in Phase 3 (that is Phase 6).
+
+### Startup and the I/O workers
+
+With `database.enabled: true`, `Application::initialize()` creates the pool, applies migrations and mounts the registry API; if PostgreSQL is unreachable or a migration fails, initialization fails (exit code 1) before the HTTP server starts. With `enabled: false` (the default) EdgeFlow behaves exactly as in Phase 2. `RequestHandler::handle` is synchronous, so a registry request occupies an I/O worker thread for the duration of its query (bounded by the 10 s server-side statement timeout and the pool size); size `server.worker_threads` and `database.pool_size` accordingly. Making request handling asynchronous belongs to a later phase.
+
+### Planned in later phases
+
+Periodic health checking that writes `health_status` (Phase 4), instance selection (Phase 5), request forwarding and `connection_count` maintenance (Phase 6).

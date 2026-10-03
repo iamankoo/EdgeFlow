@@ -3,10 +3,11 @@
 # ---- build stage -------------------------------------------------------------
 FROM ubuntu:24.04 AS build
 
-# libboost-dev provides the header-only Boost.Asio and Boost.Beast.
+# libboost-dev provides the header-only Boost.Asio and Boost.Beast; libpq-dev is the
+# PostgreSQL client library used by the service registry.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build git ca-certificates libboost-dev \
+        build-essential cmake ninja-build git ca-certificates libboost-dev libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -16,6 +17,7 @@ COPY include ./include
 COPY src ./src
 COPY tests ./tests
 COPY config ./config
+COPY db ./db
 
 # Bounded: Beast-heavy translation units need ~1 GB each, so unbounded parallelism can
 # exhaust a small Docker VM. Override with --build-arg BUILD_JOBS=N on larger machines.
@@ -31,7 +33,11 @@ RUN cmake -S . -B build -G Ninja \
 # ---- runtime stage -----------------------------------------------------------
 FROM ubuntu:24.04 AS runtime
 
-RUN groupadd --system --gid 10001 edgeflow \
+# libpq5 is the PostgreSQL client runtime library (the server runs in its own container).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 edgeflow \
     && useradd --system --uid 10001 --gid edgeflow --no-create-home --shell /usr/sbin/nologin edgeflow
 
 COPY --from=build /opt/edgeflow/bin/edgeflow /usr/local/bin/edgeflow

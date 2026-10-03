@@ -30,8 +30,8 @@ What this requires the project to actually produce:
 
 ## Current State
 
-- **Current phase:** Phase 2 — TCP/HTTP Networking Engine — **COMPLETED** (Phase 1: `8b5c6f0`; Phase 2: commit `feat: implement EdgeFlow phase 2 networking engine`, hash in git history)
-- **Next:** Phase 3 — Service Discovery & Registry — **NOT STARTED**; begins only when the owner provides its prompt, cross-checked against `Phases.md`.
+- **Current phase:** Phase 3 — Service Discovery & Registry — **COMPLETED** (Phase 1: `8b5c6f0`; Phase 2: `71ed967`; Phase 3: commit `feat: implement EdgeFlow phase 3 service discovery`, hash in git history)
+- **Next:** Phase 4 — Health Checking & Dynamic Discovery — **NOT STARTED**; begins only when the owner provides its prompt, cross-checked against `Phases.md`.
 - **Last updated:** 2026-10-03
 
 ## Entry Template
@@ -99,8 +99,31 @@ What this requires the project to actually produce:
 - **Exit condition met:** yes — the real server was shown handling concurrent keep-alive clients over HTTP/1.1, locally and in Docker/Compose.
 - **Next step:** Phase 3 once the owner provides its prompt; cross-check it against `Phases.md` first.
 
+### Phase 3 — Service Discovery & Registry (completed 2026-10-03)
+- **Commit(s):** `feat: implement EdgeFlow phase 3 service discovery` (single commit on `main`; hash recorded in git history)
+- **What was built:** A PostgreSQL-backed registry of backend service instances. `ServiceRegistry` interface plus `PostgresServiceRegistry`; libpq wrapper (`PgConnection`, `PgPool`, `PgResult`); embedded SQL migrations applied at startup (`schema_migrations`, advisory lock); JSON API under `/services` (`RegistryRequestHandler`, a decorator over the Phase 2 handler); `database` configuration section; Docker Compose with `postgres:16` (health-gated, named volume); CI PostgreSQL service.
+- **Key files / modules:** `include/edgeflow/{discovery,storage}/`, `src/{discovery,storage}/`, `src/network/RegistryRequestHandler.cpp`, `db/migrations/001_service_registry.sql`, `config/config.compose.yaml`, `tests/{discovery,storage}/`, `tests/network/RegistryApiTest.cpp`, `tests/support/{FakeRegistry,PgTestSupport}.hpp`.
+- **Design decisions:**
+  - PostgreSQL is the only store; there is no in-memory registry copy. Every operation is one parameterised, atomic SQL statement; PostgreSQL constraints decide races.
+  - `status` (registration: active/draining/disabled) and `health_status` (unknown/healthy/unhealthy) are separate. Phase 3 only stores health; Phase 4 owns transitions. `weight` and `connection_count` are stored metadata (atomic `adjustConnectionCount` exists for Phase 6).
+  - Registration is not an upsert: a duplicate `(service, instance_id)` or `(service, host, port)` is rejected (409). Deregistration deletes the row; repeating it is 404; the service stays known with zero instances (discovery returns an empty list), while a never-registered service is 404.
+  - Identity (`service`, `instance_id`, `host`, `port`) is immutable; `PATCH` rejects it.
+  - The database is optional (`database.enabled`, default false) so Phase 2 setups keep working; when enabled, an unreachable database or failed migration fails startup.
+  - The password is never in configuration or logs: `database.password_env` names the environment variable.
+  - Dead pooled connections are detected (two reads, because libpq only sees the closed socket on the second) and replaced. Reads are retried once on a lost connection; writes never are (unknown whether committed).
+  - libpq is used directly (thin RAII wrapper) rather than adding an ORM; migrations are plain SQL embedded into the binary.
+  - Registry calls block an I/O worker for the duration of a query because the Phase 2 handler is synchronous (statement timeout 10 s, pool size bounds the concurrency). Documented limitation, not redesigned.
+- **Tests run and results:** 192/192 CTest tests pass against a real PostgreSQL 16 with GCC 13.3 Debug `-Werror` and Clang 18.1.3 Debug `-Werror`; 5 consecutive full GCC runs passed. Without a database, 158 pass and 30 are reported as skipped (the Release `-Werror` Docker build runs in this mode). Coverage: validation, registration/defaults/generated ids, multiple instances, duplicates, deregistration (repeat, re-register), lookup, every metadata field, atomic connection counter under concurrency, SQL metacharacters stored as data, DB constraints as backstop, persistence after dropping all in-memory state, concurrent register/lookup/deregister, exactly-one-winner races, recovery after the server kills the connection, database-unavailable (no PostgreSQL needed), migrator idempotence and concurrency, pool behaviour, the HTTP API (valid and invalid requests, status codes, 503), and an HTTP end-to-end restart test.
+- **Runtime validation (Docker Compose, real PostgreSQL):** `docker compose up --build` healthy; 3 `user-service` instances and 1 `orders` instance registered (201 + `Location`); discovery list/single/services; PATCH of health, weight, status and connection count; duplicates 409; invalid host 400; unknown service 404; EdgeFlow stopped (exit 0) and started: all instances still discovered with their metadata; one instance deregistered (204), repeat 404, no longer discovered; `docker compose down` then `up`: still discoverable (volume); PostgreSQL stopped: registry calls 503 while `/` and `/health` stay 200; PostgreSQL started: next call 200 again; Phase 2 behaviour (200/404/keep-alive/400) unchanged; `compose stop` exit 0; `down -v` leaves nothing.
+- **Measured results:** None. Correctness only.
+- **Known issues / deviations from Phases.md:** None. Remote GitHub Actions has not been confirmed (the workflow now starts a PostgreSQL service and installs `libpq-dev`). Writes lost mid-statement are reported, not retried. The Release Docker build skips the 30 database tests (no database inside `docker build`).
+- **Defects found and fixed during validation:** a test namespace ambiguity; a wrong test expectation (`300.1.1.1x` is a valid host name); a single `PQconsumeInput` does not reveal a server-closed idle connection (now two reads); a pooled connection can still die between the check and the use (reads now retry once).
+- **Exit condition met:** yes — registered instances were persisted in PostgreSQL, discovered, still discovered after restarting EdgeFlow and after taking the whole stack down and up, and no longer discovered after deregistration.
+- **Next step:** Phase 4 once the owner provides its prompt; cross-check it against `Phases.md` first.
+
 ## Environment Notes
 
 - The Windows host has no C++20 compiler or CMake; all builds run in Linux containers (Docker Desktop must be running).
 - The Docker VM has about 3.7 GB RAM. Building Beast code with default ninja parallelism exhausted memory and hung the engine, so always build with `-j2` (the Dockerfile defaults to `BUILD_JOBS=2`).
 - Large bash heredocs in this environment can fail; write big files with an editor tool.
+- Registry tests need a PostgreSQL: `docker network create ef-net`, `docker run -d --name ef-pg --network ef-net -e POSTGRES_USER=edgeflow -e POSTGRES_PASSWORD=<dev password> -e POSTGRES_DB=edgeflow postgres:16`, then run the build container on `ef-net` with `EDGEFLOW_TEST_DB_HOST=ef-pg` and the other `EDGEFLOW_TEST_DB_*` variables. The dev image needs `libpq-dev` (`edgeflow:dev3` adds it on top of `edgeflow:dev`).

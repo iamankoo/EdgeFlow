@@ -1,9 +1,15 @@
 #include "edgeflow/core/Application.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <utility>
+
+#include "edgeflow/discovery/PostgresServiceRegistry.hpp"
+#include "edgeflow/network/RegistryRequestHandler.hpp"
+#include "edgeflow/storage/Migrator.hpp"
+#include "edgeflow/storage/Postgres.hpp"
 
 namespace edgeflow::core {
 
@@ -46,7 +52,13 @@ bool Application::initialize() {
   }
 
   auto handler = options_.request_handler;
-  if (!handler) handler = std::make_shared<network::LocalRequestHandler>();
+  if (!handler) {
+    handler = std::make_shared<network::LocalRequestHandler>();
+    if (config_.database.enabled && !initializeRegistry(handler)) {
+      signals_.reset();
+      return false;
+    }
+  }
   http_server_ =
       std::make_unique<network::HttpServer>(config_.server, logger_, std::move(handler));
   if (!http_server_->start()) {
@@ -64,6 +76,40 @@ bool Application::initialize() {
   logger_->info("application initialized (name={}, environment={})", config_.application.name,
                 config::toString(config_.application.environment));
   state_.store(ApplicationState::Initialized);
+  return true;
+}
+
+bool Application::initializeRegistry(std::shared_ptr<network::RequestHandler>& handler) {
+  const auto& db = config_.database;
+
+  storage::ConnectionParams params;
+  params.host = db.host;
+  params.port = db.port;
+  params.database = db.name;
+  params.user = db.user;
+  params.connect_timeout = db.connect_timeout;
+  if (!db.password_env.empty()) {
+    // The password lives only in the environment and in memory; it is never logged.
+    if (const char* password = std::getenv(db.password_env.c_str()); password != nullptr) {
+      params.password = password;
+    } else {
+      logger_->warn("environment variable {} is not set; connecting to the database without "
+                    "a password", db.password_env);
+    }
+  }
+
+  auto pool = std::make_shared<storage::PgPool>(std::move(params), db.pool_size, logger_);
+  const auto report = storage::migrate(*pool, storage::builtinMigrations(), *logger_);
+  if (!report.ok) {
+    logger_->error("cannot initialize the service registry database ({}:{}/{}): {}", db.host,
+                   db.port, db.name, report.error);
+    return false;
+  }
+  auto registry = std::make_shared<discovery::PostgresServiceRegistry>(std::move(pool), logger_);
+  handler = std::make_shared<network::RegistryRequestHandler>(std::move(registry),
+                                                               std::move(handler), logger_);
+  logger_->info("service registry ready (PostgreSQL {}:{}/{}, {} migration(s) applied, "
+                "pool size {})", db.host, db.port, db.name, report.applied, db.pool_size);
   return true;
 }
 

@@ -5,11 +5,15 @@ add_executable(edgeflow_tests
   core/ApplicationTest.cpp
   core/CommandLineTest.cpp
   core/ShutdownCoordinatorTest.cpp
+  discovery/PostgresServiceRegistryTest.cpp
+  discovery/ValidationTest.cpp
   logging/LoggerTest.cpp
   network/HealthProbeTest.cpp
   network/HttpServerTest.cpp
+  network/RegistryApiTest.cpp
   network/RequestHandlerTest.cpp
-  network/TcpServerTest.cpp)
+  network/TcpServerTest.cpp
+  storage/PostgresTest.cpp)
 
 target_include_directories(edgeflow_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(edgeflow_tests PRIVATE

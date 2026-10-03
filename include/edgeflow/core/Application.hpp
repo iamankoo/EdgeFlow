@@ -20,7 +20,8 @@ enum class ApplicationState { Created, Initialized, Running, Stopped };
 struct ApplicationOptions {
   // Disabled by tests that must not touch process-wide signal handlers.
   bool install_signal_handlers{true};
-  // Defaults to network::LocalRequestHandler when null.
+  // Defaults to network::LocalRequestHandler (wrapped by the service registry API when
+  // `database.enabled` is set) when null. A custom handler is used exactly as given.
   std::shared_ptr<network::RequestHandler> request_handler;
 };
 
@@ -59,6 +60,9 @@ class Application {
   [[nodiscard]] ShutdownCoordinator& shutdownCoordinator() noexcept { return shutdown_; }
 
  private:
+  // Connects to PostgreSQL, applies migrations and mounts the registry API over `handler`.
+  [[nodiscard]] bool initializeRegistry(std::shared_ptr<network::RequestHandler>& handler);
+
   config::Config config_;
   std::shared_ptr<logging::Logger> logger_;
   ApplicationOptions options_;

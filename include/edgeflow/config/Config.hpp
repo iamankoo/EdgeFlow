@@ -32,6 +32,20 @@ struct ServerConfig {
   unsigned worker_threads{2};  // threads running the io_context
 };
 
+// PostgreSQL connection settings for the service registry (Phase 3). The password is
+// never stored in configuration: `password_env` names the environment variable that
+// holds it (empty means no password).
+struct DatabaseConfig {
+  bool enabled{false};
+  std::string host{"127.0.0.1"};
+  std::uint16_t port{5432};
+  std::string name{"edgeflow"};
+  std::string user{"edgeflow"};
+  std::string password_env{"EDGEFLOW_DB_PASSWORD"};
+  unsigned pool_size{4};
+  std::chrono::seconds connect_timeout{5};
+};
+
 struct ShutdownConfig {
   std::chrono::seconds grace_period{5};
 };
@@ -39,6 +53,7 @@ struct ShutdownConfig {
 struct Config {
   ApplicationConfig application;
   ServerConfig server;
+  DatabaseConfig database;
   ShutdownConfig shutdown;
 };
 

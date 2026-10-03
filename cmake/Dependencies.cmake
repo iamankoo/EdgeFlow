@@ -57,4 +57,10 @@ endif()
 # the project is tested with.
 find_package(Boost 1.83 REQUIRED)
 find_package(Threads REQUIRED)
+
+# --- PostgreSQL client (service registry) ----------------------------------------
+# libpq, the PostgreSQL C client library (libpq-dev on Debian/Ubuntu). It is the
+# client for the locked PostgreSQL store; the server itself runs in its own container.
+find_package(PostgreSQL REQUIRED)
+message(STATUS "PostgreSQL client ${PostgreSQL_VERSION_STRING} found")
 message(STATUS "Boost ${Boost_VERSION} found")

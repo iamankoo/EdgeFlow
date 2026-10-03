@@ -1,18 +1,48 @@
 name: edgeflow
 
 services:
+  postgres:
+    image: postgres:16
+    container_name: edgeflow-postgres
+    restart: "no"
+    environment:
+      POSTGRES_USER: edgeflow
+      POSTGRES_DB: edgeflow
+      # Development default only. Override it (and keep it out of Git) with
+      #   EDGEFLOW_DB_PASSWORD=... docker compose up
+      # or an untracked .env file. The same value is handed to EdgeFlow below.
+      POSTGRES_PASSWORD: ${EDGEFLOW_DB_PASSWORD:-edgeflow_dev_password}
+    volumes:
+      # Named volume: the registry survives `docker compose down` and EdgeFlow restarts.
+      # `docker compose down -v` deletes it.
+      - edgeflow-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edgeflow -d edgeflow"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
   edgeflow:
     build:
       context: .
-    image: edgeflow:phase2
+    image: edgeflow:phase3
     container_name: edgeflow
     restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The configuration names this variable (database.password_env); the password itself
+      # is never written to a configuration file.
+      EDGEFLOW_DB_PASSWORD: ${EDGEFLOW_DB_PASSWORD:-edgeflow_dev_password}
     ports:
       # Host port is configurable: EDGEFLOW_HTTP_PORT=9000 docker compose up
-      # The container port must equal server.port in config/config.yaml (default 8080).
+      # The container port must equal server.port in the configuration (default 8080).
       - "${EDGEFLOW_HTTP_PORT:-8080}:8080"
     volumes:
-      - ./config/config.yaml:/etc/edgeflow/config.yaml:ro
+      # The shipped configuration with the service registry enabled for the postgres service.
+      - ./config/config.compose.yaml:/etc/edgeflow/config.yaml:ro
     # Must exceed shutdown.grace_period_seconds so a graceful stop is never killed.
     stop_grace_period: 10s
     read_only: true
@@ -21,3 +51,6 @@ services:
     security_opt:
       - no-new-privileges:true
     # The image's HEALTHCHECK (edgeflow --healthcheck, i.e. GET /health) applies.
+
+volumes:
+  edgeflow-pgdata:

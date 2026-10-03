@@ -8,6 +8,7 @@
 
 #include "edgeflow/core/Application.hpp"
 #include "support/NetTestSupport.hpp"
+#include "support/PgTestSupport.hpp"
 
 namespace {
 
@@ -283,6 +284,78 @@ TEST(ApplicationNetworkTest, CustomRequestHandlerIsUsed) {
   ASSERT_TRUE(response);
   EXPECT_EQ(response->body(), "recorded");
   EXPECT_EQ(recorder->count(), 1);
+}
+
+// --- service registry integration (Phase 3) -------------------------------------------
+
+TEST(ApplicationRegistryTest, DisabledDatabaseLeavesPhase2BehaviourUntouched) {
+  CapturedLogger log;
+  Application app(testConfig(), log.logger(), kNoSignals);
+  ASSERT_TRUE(app.initialize());
+  TestClient client(app.httpPort());
+  EXPECT_EQ(client.get("/health")->result(), http::status::ok);
+  EXPECT_EQ(client.get("/services/svc/instances")->result(), http::status::not_found)
+      << "the registry API is not mounted without a database";
+  EXPECT_FALSE(log.contains("service registry ready"));
+}
+
+TEST(ApplicationRegistryTest, InitializeFailsWhenTheDatabaseIsUnreachable) {
+  CapturedLogger log;
+  auto config = testConfig();
+  config.database.enabled = true;
+  config.database.host = "127.0.0.1";
+  config.database.port = 1;  // nothing listens here
+  config.database.connect_timeout = std::chrono::seconds{1};
+  config.database.password_env = "EDGEFLOW_TEST_PASSWORD_THAT_IS_NOT_SET";
+  Application app(config, log.logger(), kNoSignals);
+  EXPECT_FALSE(app.initialize()) << "a registry that cannot reach PostgreSQL must not start";
+  EXPECT_TRUE(log.contains("cannot initialize the service registry database"));
+  EXPECT_TRUE(log.contains("EDGEFLOW_TEST_PASSWORD_THAT_IS_NOT_SET is not set"));
+  EXPECT_EQ(app.httpPort(), 0) << "no HTTP server is left listening";
+  EXPECT_EQ(app.state(), ApplicationState::Created);
+}
+
+TEST(ApplicationRegistryTest, FailedDatabaseInitializationReleasesSignalHandlers) {
+  CapturedLogger log;
+  auto config = testConfig();
+  config.database.enabled = true;
+  config.database.port = 1;
+  config.database.connect_timeout = std::chrono::seconds{1};
+  {
+    Application app(config, log.logger(), ApplicationOptions{});  // installs handlers
+    EXPECT_FALSE(app.initialize());
+  }
+  CapturedLogger second_log;
+  Application second(testConfig(), second_log.logger(), ApplicationOptions{});
+  EXPECT_TRUE(second.initialize()) << "handlers were released by the failed attempt";
+}
+
+TEST(ApplicationRegistryTest, ServesTheRegistryApiBackedByPostgres) {
+  EDGEFLOW_REQUIRE_TEST_DATABASE();
+  CapturedLogger log;
+  auto config = testConfig();
+  config.database.enabled = true;
+  config.database.host = test_db_params->host;
+  config.database.port = test_db_params->port;
+  config.database.name = test_db_params->database;
+  config.database.user = test_db_params->user;
+  config.database.password_env = "EDGEFLOW_TEST_DB_PASSWORD";
+  Application app(config, log.logger(), kNoSignals);
+  ASSERT_TRUE(app.initialize()) << log.output();
+  EXPECT_TRUE(log.contains("service registry ready"));
+
+  const std::string service = edgeflow::testing::uniqueName("app");
+  TestClient client(app.httpPort());
+  const auto created = client.request(http::verb::post, "/services/" + service + "/instances",
+                                      R"({"instance_id":"a","host":"10.0.0.1","port":9000})");
+  ASSERT_TRUE(created);
+  EXPECT_EQ(created->result(), http::status::created);
+  EXPECT_EQ(client.get("/services/" + service + "/instances/a")->result(), http::status::ok);
+  EXPECT_EQ(client.get("/health")->result(), http::status::ok);
+  EXPECT_EQ(client.request(http::verb::delete_, "/services/" + service + "/instances/a")->result(),
+            http::status::no_content);
+  app.shutdown();
+  EXPECT_TRUE(log.contains("shutdown completed"));
 }
 
 }  // namespace

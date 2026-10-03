@@ -13,6 +13,19 @@ jobs:
   build-and-test:
     name: ${{ matrix.build_type }} (${{ matrix.compiler }})
     runs-on: ubuntu-24.04
+    # A real PostgreSQL so the registry persistence tests run instead of being skipped.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: edgeflow
+          POSTGRES_PASSWORD: ci_only_password
+          POSTGRES_DB: edgeflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U edgeflow -d edgeflow"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     strategy:
       fail-fast: false
       matrix:
@@ -30,7 +43,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build cmake clang libboost-dev
+          sudo apt-get install -y --no-install-recommends ninja-build cmake clang libboost-dev libpq-dev
 
       - name: Configure
         run: >
@@ -42,4 +55,10 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test
+        env:
+          EDGEFLOW_TEST_DB_HOST: 127.0.0.1
+          EDGEFLOW_TEST_DB_PORT: "5432"
+          EDGEFLOW_TEST_DB_NAME: edgeflow
+          EDGEFLOW_TEST_DB_USER: edgeflow
+          EDGEFLOW_TEST_DB_PASSWORD: ci_only_password
         run: ctest --test-dir build --output-on-failure

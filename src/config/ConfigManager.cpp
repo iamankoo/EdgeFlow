@@ -25,6 +25,8 @@ constexpr long long kMinHeaderBytes = 1024;
 constexpr long long kMaxHeaderBytes = 65536;
 constexpr long long kMaxConnections = 100000;
 constexpr long long kMaxWorkerThreads = 64;
+constexpr long long kMaxPoolSize = 64;
+constexpr long long kMaxConnectTimeoutSeconds = 60;
 
 using Errors = std::vector<std::string>;
 
@@ -201,6 +203,74 @@ void parseServer(const YAML::Node& root, ServerConfig& out, Errors& errors) {
   }
 }
 
+bool isValidEnvName(const std::string& name) {
+  if (name.empty()) return true;  // no password
+  if (name.size() > kMaxNameLength) return false;
+  if (std::isdigit(static_cast<unsigned char>(name.front())) != 0) return false;
+  return std::all_of(name.begin(), name.end(), [](unsigned char c) {
+    return std::isalnum(c) != 0 || c == '_';
+  });
+}
+
+void parseDatabase(const YAML::Node& root, DatabaseConfig& out, Errors& errors) {
+  const YAML::Node section = sectionOf(root, "database", errors);
+  rejectUnknownKeys(section, "database",
+                    {"enabled", "host", "port", "name", "user", "password_env", "pool_size",
+                     "connect_timeout_seconds"},
+                    errors);
+
+  if (auto enabled = readString(section, "database", "enabled", errors)) {
+    if (*enabled == "true") {
+      out.enabled = true;
+    } else if (*enabled == "false") {
+      out.enabled = false;
+    } else {
+      errors.push_back("'database.enabled' must be true or false (got '" + *enabled + "')");
+    }
+  }
+  if (auto host = readString(section, "database", "host", errors)) {
+    if (isValidHost(*host)) {
+      out.host = *host;
+    } else {
+      errors.push_back("'database.host' must be a non-empty string without whitespace");
+    }
+  }
+  if (auto v = readBounded(section, "database", "port", 1, 65535, errors)) {
+    out.port = static_cast<std::uint16_t>(*v);
+  }
+  if (auto name = readString(section, "database", "name", errors)) {
+    if (isValidName(*name)) {
+      out.name = *name;
+    } else {
+      errors.push_back("'database.name' must be 1-" + std::to_string(kMaxNameLength) +
+                       " characters of [A-Za-z0-9_.-]");
+    }
+  }
+  if (auto user = readString(section, "database", "user", errors)) {
+    if (isValidName(*user)) {
+      out.user = *user;
+    } else {
+      errors.push_back("'database.user' must be 1-" + std::to_string(kMaxNameLength) +
+                       " characters of [A-Za-z0-9_.-]");
+    }
+  }
+  if (auto env = readString(section, "database", "password_env", errors)) {
+    if (isValidEnvName(*env)) {
+      out.password_env = *env;
+    } else {
+      errors.push_back("'database.password_env' must be the name of an environment variable "
+                       "([A-Za-z_][A-Za-z0-9_]*), never the password itself");
+    }
+  }
+  if (auto v = readBounded(section, "database", "pool_size", 1, kMaxPoolSize, errors)) {
+    out.pool_size = static_cast<unsigned>(*v);
+  }
+  if (auto v = readBounded(section, "database", "connect_timeout_seconds", 1,
+                           kMaxConnectTimeoutSeconds, errors)) {
+    out.connect_timeout = std::chrono::seconds{*v};
+  }
+}
+
 void parseShutdown(const YAML::Node& root, ShutdownConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "shutdown", errors);
   rejectUnknownKeys(section, "shutdown", {"grace_period_seconds"}, errors);
@@ -270,9 +340,10 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
 
   Config parsed;
   Errors errors;
-  rejectUnknownKeys(root, "", {"application", "server", "shutdown"}, errors);
+  rejectUnknownKeys(root, "", {"application", "server", "database", "shutdown"}, errors);
   parseApplication(root, parsed.application, errors);
   parseServer(root, parsed.server, errors);
+  parseDatabase(root, parsed.database, errors);
   parseShutdown(root, parsed.shutdown, errors);
 
   if (!errors.empty()) {

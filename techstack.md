@@ -9,7 +9,7 @@ The stack below is **locked**. No technology may be substituted or added without
 | Compilers | GCC / Clang | Phase 1 active (CI configured for both) | Both supported to catch portability issues and to use sanitizers and profiling tools. |
 | Networking | Boost.Asio | Phase 2 implemented | Mature asynchronous I/O and executor model for TCP; the basis of the concurrency design. |
 | HTTP | Boost.Beast (HTTP/1.1 initially) | Phase 2 implemented | HTTP parsing and serialization built on Asio, avoiding a hand-rolled parser. |
-| Persistence | PostgreSQL | Planned (Phase 3) | Durable, transactional source of truth for service metadata. |
+| Persistence | PostgreSQL | Phase 3 implemented | Durable, transactional source of truth for service metadata. |
 | Shared state / cache | Redis | Planned (Phase 8) | Low-latency shared store for response caching and distributed rate-limit state. |
 | Containers | Docker, Docker Compose | Phase 1 active | Reproducible local deployment of the gateway, backends, PostgreSQL and Redis. |
 | Unit testing | GoogleTest | Phase 1 active (Phase 2 adds real-socket integration tests) | Standard C++ test framework with CMake/CTest integration. |
@@ -40,4 +40,6 @@ All four will be implemented (Phase 5) behind one strategy abstraction so they c
 | Boost | Taken from the system (`libboost-dev`, minimum 1.83) and required at configure time. Asio and Beast are header-only, so only headers are used and the runtime image needs no Boost packages. Fetching Boost was rejected as slow |
 | HTTP | Beast parser/serializer over plain TCP (`tcp::socket`); no TLS and no HTTP/2 (HTTP/1.1 only, per the roadmap) |
 | Timeouts | Per-connection Asio `steady_timer` (not Beast's `tcp_stream` timeouts, because those close the socket on expiry and a 408 must be written first) |
+| PostgreSQL client | libpq (the PostgreSQL C client library; `libpq-dev` to build, `libpq5` at runtime) used directly through a thin RAII wrapper with parameterised statements; no ORM or additional database framework. Server: `postgres:16` in Docker Compose |
+| Schema management | Plain SQL files in `db/migrations/`, embedded into the binary at build time and applied at startup by a small migrator (`schema_migrations` table, advisory lock) |
 | Minimum CMake | 3.25 |

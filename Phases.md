@@ -1,6 +1,6 @@
 # EdgeFlow — Development Phases
 
-**Current Phase: Phase 2 completed — awaiting Phase 3 requirements**
+**Current Phase: Phase 3 completed — awaiting Phase 4 requirements**
 
 This document is the authoritative roadmap. Phases must not be skipped. A phase begins only after the previous phase has met its exit condition. Later-phase functionality must not be implemented early unless strictly required as a dependency and clearly documented.
 
@@ -10,7 +10,7 @@ Before implementing a phase, its detailed implementation prompt must be cross-ch
 |-------|-------|--------|
 | 1 | Foundation & Core Infrastructure | Completed |
 | 2 | TCP/HTTP Networking Engine | Completed |
-| 3 | Service Discovery & Registry | Not started |
+| 3 | Service Discovery & Registry | Completed |
 | 4 | Health Checking & Dynamic Discovery | Not started |
 | 5 | Load Balancing Engine | Not started |
 | 6 | Reverse Proxy & Request Forwarding | Not started |
@@ -84,6 +84,8 @@ Build:
 PostgreSQL is the persistent source of service metadata.
 
 **Exit condition:** EdgeFlow can discover registered backend service instances dynamically.
+
+**Completion summary:** Met. A PostgreSQL-backed registry (libpq, connection pool, embedded SQL migrations) stores service instances with identity, registration status, health status, version, weight and connection count; instances can be registered, deregistered, looked up, listed and updated through a `ServiceRegistry` interface and a JSON API under `/services`. Verified with real PostgreSQL in Docker Compose: three instances registered, discovered, EdgeFlow restarted and the whole stack taken down and up again with the instances still discoverable, one instance deregistered and no longer returned, and a database outage reported as `503` with recovery afterwards. 192 tests pass with GCC 13 and Clang 18 (`-Werror`) against PostgreSQL (30 are skipped when no database is available). Health status and weight are stored metadata only: probing is Phase 4, selection is Phase 5. The remote GitHub Actions run has not been confirmed. No performance figures were measured. See `summary.md`.
 
 ---
 

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 
@@ -247,6 +248,70 @@ TEST(ConfigManagerTest, LoadsFileWrittenToTemporaryDirectory) {
   EXPECT_TRUE(manager.load(path));
   EXPECT_EQ(manager.config().application.environment, Environment::Production);
   std::filesystem::remove(path);
+}
+
+TEST(ConfigManagerDatabaseTest, DefaultsKeepTheRegistryDisabled) {
+  ConfigManager manager;
+  ASSERT_TRUE(manager.loadFromString("server:\n  port: 8080\n"));
+  const auto& db = manager.config().database;
+  EXPECT_FALSE(db.enabled) << "Phase 2 configurations keep working without a database";
+  EXPECT_EQ(db.host, "127.0.0.1");
+  EXPECT_EQ(db.port, 5432);
+  EXPECT_EQ(db.name, "edgeflow");
+  EXPECT_EQ(db.user, "edgeflow");
+  EXPECT_EQ(db.password_env, "EDGEFLOW_DB_PASSWORD");
+  EXPECT_EQ(db.pool_size, 4U);
+  EXPECT_EQ(db.connect_timeout, std::chrono::seconds{5});
+}
+
+TEST(ConfigManagerDatabaseTest, ParsesEveryKey) {
+  ConfigManager manager;
+  ASSERT_TRUE(manager.loadFromString(
+      "database:\n  enabled: true\n  host: postgres\n  port: 5433\n  name: registry\n"
+      "  user: gateway\n  password_env: MY_DB_PW\n  pool_size: 9\n  connect_timeout_seconds: 12\n"));
+  const auto& db = manager.config().database;
+  EXPECT_TRUE(db.enabled);
+  EXPECT_EQ(db.host, "postgres");
+  EXPECT_EQ(db.port, 5433);
+  EXPECT_EQ(db.name, "registry");
+  EXPECT_EQ(db.user, "gateway");
+  EXPECT_EQ(db.password_env, "MY_DB_PW");
+  EXPECT_EQ(db.pool_size, 9U);
+  EXPECT_EQ(db.connect_timeout, std::chrono::seconds{12});
+}
+
+TEST(ConfigManagerDatabaseTest, RejectsUnknownKeysAndInvalidValues) {
+  ConfigManager unknown;
+  EXPECT_FALSE(unknown.loadFromString("database:\n  passwrd: x\n"));
+  EXPECT_TRUE(anyErrorContains(unknown, "unknown key 'database.passwrd'"));
+
+  for (const char* bad : {"enabled: maybe", "port: 0", "port: 70000", "pool_size: 0", "pool_size: 65",
+                          "connect_timeout_seconds: 0", "connect_timeout_seconds: 61", "host: 'a b'",
+                          "name: 'bad name'", "user: ''", "password_env: 'has space'",
+                          "password_env: 1STARTS_WITH_DIGIT", "pool_size: lots"}) {
+    ConfigManager manager;
+    EXPECT_FALSE(manager.loadFromString(std::string{"database:\n  "} + bad + "\n")) << bad;
+    EXPECT_TRUE(anyErrorContains(manager, "database.")) << bad;
+  }
+}
+
+TEST(ConfigManagerDatabaseTest, PasswordItselfCanNeverBeConfigured) {
+  ConfigManager manager;
+  EXPECT_FALSE(manager.loadFromString("database:\n  password: hunter2\n"));
+  EXPECT_TRUE(anyErrorContains(manager, "unknown key 'database.password'"));
+  // password_env is a variable NAME: a value that is not a valid name is refused.
+  ConfigManager literal;
+  EXPECT_FALSE(literal.loadFromString("database:\n  password_env: 'p@ss:word!'\n"));
+}
+
+TEST(ConfigManagerDatabaseTest, ShippedConfigurationsParse) {
+  ConfigManager shipped;
+  ASSERT_TRUE(shipped.load(std::filesystem::path{EDGEFLOW_DEFAULT_CONFIG}));
+  EXPECT_FALSE(shipped.config().database.enabled);
+  ConfigManager compose;
+  ASSERT_TRUE(compose.load(std::filesystem::path{EDGEFLOW_DEFAULT_CONFIG}.parent_path() / "config.compose.yaml"));
+  EXPECT_TRUE(compose.config().database.enabled);
+  EXPECT_EQ(compose.config().database.host, "postgres");
 }
 
 }  // namespace
