@@ -34,6 +34,10 @@ constexpr long long kMaxThreshold = 100;
 constexpr long long kMaxConcurrentChecks = 1024;
 constexpr std::size_t kMaxHttpPathLength = 256;
 constexpr long long kMaxConnectTimeoutSeconds = 60;
+constexpr long long kMaxProxyConnectTimeoutMs = 60000;
+constexpr long long kMaxProxyIdleConnections = 1024;
+constexpr long long kMinResponseBytes = 1024;
+constexpr long long kMaxResponseBytes = 256LL * 1024 * 1024;
 
 using Errors = std::vector<std::string>;
 
@@ -372,6 +376,52 @@ void parseRouting(const YAML::Node& root, RoutingConfig& out, Errors& errors) {
   }
 }
 
+void parseProxy(const YAML::Node& root, ProxyConfig& out, Errors& errors) {
+  const YAML::Node section = sectionOf(root, "proxy", errors);
+  rejectUnknownKeys(section, "proxy",
+                    {"enabled", "connect_timeout_ms", "upstream_timeout_ms", "io_threads",
+                     "max_idle_connections", "idle_timeout_ms", "max_response_bytes"},
+                    errors);
+
+  if (auto enabled = readString(section, "proxy", "enabled", errors)) {
+    if (*enabled == "true") {
+      out.enabled = true;
+    } else if (*enabled == "false") {
+      out.enabled = false;
+    } else {
+      errors.push_back("'proxy.enabled' must be true or false (got '" + *enabled + "')");
+    }
+  }
+  if (auto v = readBounded(section, "proxy", "connect_timeout_ms", kMinTimeoutMs,
+                           kMaxProxyConnectTimeoutMs, errors)) {
+    out.connect_timeout = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(section, "proxy", "upstream_timeout_ms", kMinTimeoutMs, kMaxTimeoutMs,
+                           errors)) {
+    out.upstream_timeout = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(section, "proxy", "io_threads", 1, kMaxWorkerThreads, errors)) {
+    out.io_threads = static_cast<unsigned>(*v);
+  }
+  if (auto v = readBounded(section, "proxy", "max_idle_connections", 0, kMaxProxyIdleConnections,
+                           errors)) {
+    out.max_idle_connections = static_cast<unsigned>(*v);
+  }
+  if (auto v = readBounded(section, "proxy", "idle_timeout_ms", kMinTimeoutMs, kMaxIntervalMs,
+                           errors)) {
+    out.idle_timeout = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(section, "proxy", "max_response_bytes", kMinResponseBytes,
+                           kMaxResponseBytes, errors)) {
+    out.max_response_bytes = static_cast<std::size_t>(*v);
+  }
+  if (out.connect_timeout > out.upstream_timeout) {
+    errors.push_back("'proxy.connect_timeout_ms' (" + std::to_string(out.connect_timeout.count()) +
+                     ") must not exceed 'proxy.upstream_timeout_ms' (" +
+                     std::to_string(out.upstream_timeout.count()) + ")");
+  }
+}
+
 void parseShutdown(const YAML::Node& root, ShutdownConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "shutdown", errors);
   rejectUnknownKeys(section, "shutdown", {"grace_period_seconds"}, errors);
@@ -441,7 +491,7 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
 
   Config parsed;
   Errors errors;
-  rejectUnknownKeys(root, "", {"application", "server", "database", "health_check", "routing", "shutdown"}, errors);
+  rejectUnknownKeys(root, "", {"application", "server", "database", "health_check", "routing", "proxy", "shutdown"}, errors);
   parseApplication(root, parsed.application, errors);
   parseServer(root, parsed.server, errors);
   parseDatabase(root, parsed.database, errors);
@@ -450,6 +500,11 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
   if (parsed.health_check.enabled && !parsed.database.enabled) {
     errors.push_back("'health_check.enabled' requires 'database.enabled': health checking reads "
                      "instances from, and writes health to, the service registry");
+  }
+  parseProxy(root, parsed.proxy, errors);
+  if (parsed.proxy.enabled && !parsed.database.enabled) {
+    errors.push_back("'proxy.enabled' requires 'database.enabled': the proxy forwards only to "
+                     "instances that routing selects from the service registry");
   }
   parseShutdown(root, parsed.shutdown, errors);
 

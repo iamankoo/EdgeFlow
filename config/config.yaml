@@ -47,5 +47,17 @@ routing:
   # Phase 5: how an instance is chosen among the routable (active AND healthy) ones.
   strategy: round_robin      # round_robin | least_connections | weighted | consistent_hashing
 
+proxy:
+  # Phase 6 reverse proxy: /proxy/{service}/... is forwarded to a healthy instance of
+  # {service} chosen by the routing strategy (the prefix is stripped, the query kept).
+  # Needs database.enabled: only the routable (active AND healthy) instances are used.
+  enabled: false
+  connect_timeout_ms: 2000   # 10..60000; resolving + connecting to a backend; exceeding it answers 504
+  upstream_timeout_ms: 30000 # 10..600000; whole exchange (connect + request + response); exceeding it answers 504; >= connect_timeout_ms
+  io_threads: 2              # 1..64; threads running upstream I/O (separate from server.worker_threads)
+  max_idle_connections: 32   # 0..1024; idle keep-alive connections kept per backend; 0 disables connection reuse
+  idle_timeout_ms: 30000     # 10..3600000; an idle pooled connection older than this is closed, not reused
+  max_response_bytes: 16777216   # 1024..268435456 (default 16 MiB); a larger backend response answers 502
+
 shutdown:
   grace_period_seconds: 5    # 0..300; in-flight requests may finish within this time

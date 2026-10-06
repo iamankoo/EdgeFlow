@@ -1,6 +1,6 @@
 # EdgeFlow — Architecture
 
-> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation), 18 (Phase 2: networking engine), 19 (Phase 3: service discovery and registry) and 20 (Phase 4: health checking) and 21 (Phase 5: load balancing) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
+> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation), 18 (Phase 2: networking engine), 19 (Phase 3: service discovery and registry) and 20 (Phase 4: health checking), 21 (Phase 5: load balancing) and 22 (Phase 6: reverse proxy) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
 
 ## 1. High-Level Architecture
 
@@ -73,11 +73,11 @@ Instances are registered, updated and deregistered. PostgreSQL is the persistent
 
 ## 6. Load-Balancing Flow
 
-`Router` holds a `LoadBalancingStrategy` (Round Robin, Least Connections, Weighted Routing, Consistent Hashing). It receives only healthy instances and returns a selection. Consistent Hashing uses a request key (e.g. client IP or header). Strategy is selected via configuration. Implemented in Phase 5 (section 21); the router is not yet in the request path because forwarding is Phase 6.
+`Router` holds a `LoadBalancingStrategy` (Round Robin, Least Connections, Weighted Routing, Consistent Hashing). It receives only healthy instances and returns a selection. Consistent Hashing uses a request key (e.g. client IP or header). Strategy is selected via configuration. Implemented in Phase 5 (section 21); since Phase 6 the router is in the request path of every proxied request (section 22).
 
 ## 7. Reverse-Proxy Flow
 
-Client → EdgeFlow → Backend → EdgeFlow → Client. The proxy rewrites hop-by-hop headers, propagates the request ID and forwarding headers, reuses pooled backend connections, and enforces upstream timeouts. Backend failures are surfaced to the reliability layer.
+Client → EdgeFlow → Backend → EdgeFlow → Client. The proxy rewrites hop-by-hop headers, propagates the request ID and forwarding headers, reuses pooled backend connections, and enforces upstream timeouts. Backend failures are surfaced to the reliability layer. Implemented in Phase 6 (section 22): forwarding, header propagation, request ids, connection pooling, upstream timeouts and gateway errors; retries and circuit breaking are not part of it (Phase 7).
 
 ## 8. Failure and Retry Flow
 
@@ -192,7 +192,7 @@ src/network/               matching implementations
 | `HttpServer` | Owns the `io_context`, `worker_threads` worker threads, the `TcpServer`, and the `ConnectionTracker`. Enforces `max_connections`. `start()` / `stop(grace)` implement startup and graceful shutdown. |
 | `HttpConnection` | One TCP connection: Beast request parser, state machine, timers, keep-alive loop, error responses. |
 | `ConnectionTracker` | Mutex-protected registry of weak references to live connections: counts them and lets shutdown drain or force-close them. |
-| `RequestHandler` | Interface `HttpRequest -> HttpResponse`. `LocalRequestHandler` answers locally (`GET /`, `GET /health`, `POST /echo`, otherwise 404/405). This is **not** the load-balancing router, which arrives in Phase 5. |
+| `RequestHandler` | Interface `HttpRequest -> HttpResponse`. `LocalRequestHandler` answers locally (`GET /`, `GET /health`, `POST /echo`, otherwise 404/405). This is **not** the load-balancing router. Since Phase 6 it also has an asynchronous entry point, `handleAsync` (section 22), which connections use and which defaults to calling `handle()`. |
 | `Http` | Beast type aliases and response builders (JSON bodies via nlohmann/json). |
 | `HealthProbe` | One-shot client behind `edgeflow --healthcheck` and the container `HEALTHCHECK`. |
 
@@ -439,6 +439,134 @@ An instance is identified by `(service, instance_id)`: never by its position in 
 
 `routing.strategy` is one of `round_robin` (default), `least_connections`, `weighted`, `consistent_hashing`; anything else, or an unknown key in the section, is a startup error. With the registry enabled the application builds a `Router` over it. `GET /services/{service}/route[?key=K]` returns the instance the strategy picks right now, together with the strategy name: `200`, `404` unknown service, `503` when the service has no routable instance. **It is a routing decision only**: nothing is forwarded and no state changes. It exists to observe and test routing in a running system until Phase 6 uses `Router::route` for every proxied request.
 
-### Limitations before Phase 6
+### Limitations before Phase 6 (historical; Phase 6 resolved the first two, see section 22)
 
 No request is forwarded to the selected instance. `connection_count` is not maintained by EdgeFlow yet. The routable set is read from PostgreSQL for each decision (correct and current, but not the cached view a high-rate proxy may want; to be measured, not assumed, in Phase 9). One strategy applies to all services.
+
+## 22. Phase 6 Implementation: Reverse Proxy & Request Forwarding
+
+### Implemented in Phase 6
+
+```text
+include/edgeflow/proxy/   ProxyHandler  ProxyHeaders  UpstreamClient  UpstreamPool
+src/proxy/                matching implementations
+include/edgeflow/network/ RequestHandler gained handleAsync / RequestContext / CancelFunction
+```
+
+```text
+Client
+  | GET /proxy/{service}/rest?query
+  v
+HttpServer / HttpConnection        client-side I/O workers (never wait for a backend or the database)
+  v   handleAsync(request, {client address}, done)
+ProxyHandler                       maps the URL, owns the in-flight operations
+  v   lookup thread pool           (blocking PostgreSQL calls)
+Router::route(service, client address)  ->  Phase 5 LoadBalancer  ->  routable (active AND healthy) instance
+  v   adjustConnectionCount(+1)    the request now counts against the instance
+UpstreamClient                     upstream I/O threads (their own io_context)
+  v   UpstreamPool (idle keep-alive connections) or a new connection
+Backend instance
+  ^   response (or a failure)
+  v   adjustConnectionCount(-1)    BEFORE the response is handed back
+HttpConnection  ->  Client
+```
+
+| Component | Responsibility |
+|-----------|----------------|
+| `RequestHandler::handleAsync` | The asynchronous request boundary. Connections call it for every request; the default runs `handle()` inline, so every earlier handler is unchanged. A handler that has to wait answers later, from any thread, through a callback; it may return a cancel function. |
+| `HttpConnection` (changed) | In state `Handling` it no longer runs the handler inline and blocks its strand: it waits for the callback, which is re-posted onto the connection's strand (first answer wins). Closing the connection while it waits (forced close at the end of the grace period) calls the cancel function. A graceful drain still lets the request finish and answers it with `Connection: close`. The handler is told the peer address (`RequestContext`). A response to HEAD keeps its backend `Content-Length`. |
+| `ProxyHandler` | Mounted outermost in front of the registry API and local endpoints. Anything that is not `/proxy` or `/proxy/...` is passed to the wrapped handler untouched. Owns the upstream `io_context` and threads, the lookup thread pool, the pool and client, and the set of in-flight operations; `stop()` cancels and drains them. |
+| `ProxyHeaders` | Pure functions: URL mapping, request-id choice and generation, upstream-request construction, client-response construction, gateway errors. No I/O, so every header rule is unit-tested directly. |
+| `UpstreamPool` | Idle keep-alive connections per backend (`host:port`): LIFO check-out, per-backend cap, idle TTL, liveness check at check-out, `close()`. Thread-safe. |
+| `UpstreamClient` | One request to one backend: take a pooled or open a new connection (name resolution through the Phase 4 `NameResolver`), write the request, read the response, decide whether the connection can be reused. One deadline for the whole exchange, a separate connect timeout, cancellation, bounded response size. |
+
+### Service mapping
+
+`/proxy/{service}/...`: the first path component after `/proxy/` is the service name; the prefix is stripped and the rest of the path **and the query string** are forwarded verbatim (no decoding, no normalisation).
+
+```text
+/proxy/orders/                    -> orders, /
+/proxy/orders                     -> orders, /
+/proxy/orders/api/users?id=42     -> orders, /api/users?id=42
+/proxy/payment/v1/charge          -> payment, /v1/charge
+```
+
+`/proxy` and `/proxy/` (no service), and a service part that is not a valid service name (uppercase, percent-escapes, dots-only, over 64 characters, ...) are `400`; they never reach a backend. A valid but unknown service is `404`. `/proxyfoo`, `/Proxy/...` and absolute-form targets are not proxy targets: they are handled (404) exactly as before. `/`, `/health`, `/echo` and everything under `/services` behave as in Phases 1-5; `GET /services/{service}/route` is still only a routing decision and forwards nothing.
+
+### Routing
+
+The proxy calls `Router::route(service, {key})` for every request: the Phase 4 routable view and the configured Phase 5 strategy decide, so the proxy only ever reaches `active` AND `healthy` instances and works with all four strategies. It adds no health logic, never queries PostgreSQL for selection itself, and does not bypass `LoadBalancer`. The routing key (used by consistent hashing) is the **client address**, so one client keeps landing on one instance while the set is unchanged.
+
+### Header propagation
+
+- **Removed (both directions):** hop-by-hop headers (`Connection`, `Keep-Alive`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`, every `Proxy-*`) and every header named by the sender's `Connection` header; for responses also the fields named by `Trailer`. Also dropped on the way upstream: `Expect` (EdgeFlow already holds the whole body, so a backend must not send `100 Continue`), `Content-Length` (recomputed; the body is always sent with one, a client's chunked body is sent de-chunked).
+- **Rewritten:** `Host` = the chosen instance (`host[:port]`, IPv6 bracketed, `:80` implied), never the gateway's own host. `X-Forwarded-Proto` = `http` (the listener speaks plain HTTP; a client-supplied value is not believed). `X-Request-Id` (below).
+- **Appended:** `X-Forwarded-For` keeps the incoming chain and appends the client address; `Via` keeps the chain and appends `1.1 edgeflow` (the received protocol version) on the request and on the response.
+- Everything else, including repeated headers such as `Set-Cookie`, passes unchanged. The upstream request is always HTTP/1.1.
+
+### Request ids
+
+Every proxied request has an `X-Request-Id`. A client-supplied one (1-128 visible ASCII characters) is preserved; otherwise a random UUID v4 is generated (no host, process or client information). The same id is sent to the backend, returned to the client **also on gateway errors**, and appears in the proxy log lines (`proxy [<id>] ...`).
+
+### Connection reuse and the pool
+
+After a complete response that allowed keep-alive, left no unread byte and was not delimited by closing the connection, the upstream connection goes back to the pool; in every other case (backend `Connection: close`, HTTP/1.0 without keep-alive, read-until-EOF body, any error, timeout, oversize or malformed response, cancellation) it is closed, never pooled. At check-out an idle connection is dropped when it is older than `idle_timeout_ms`, or when the backend closed or reset it, or sent bytes nobody asked for; this is detected without sending anything (non-blocking peek). At most `max_idle_connections` idle connections are kept per backend (0 disables reuse). Expired connections are evicted whenever the pool is used (there is no reaper thread). `stop()` closes every idle connection.
+
+### Stale pooled connection safeguard (connection-pool correctness, not a retry policy)
+
+If a pooled connection turns out dead **before any request byte was written** (found dead at check-out, or the first write failed having written nothing), it is discarded and the request goes out on a freshly opened connection. This happens at most once per request and never on a fresh connection. After the first request byte was written, any failure is final: no retry on a connection error, none on an HTTP status, no counter, no backoff, no failover. A request that already reached a backend is never repeated. (Phase 7 owns retries.)
+
+### Timeouts
+
+`proxy.connect_timeout_ms` bounds resolving and connecting (`504`); `proxy.upstream_timeout_ms` bounds the **whole exchange**: connect, request and complete response (`504`). Both timers are cancelled when the exchange ends; the timed-out connection is closed and not pooled; the connection count is released; the client's connection stays open and usable. A client whose request is being handled has no timer running (the exchange is bounded by the upstream deadline).
+
+### Failure semantics
+
+| Situation | Client receives |
+|-----------|-----------------|
+| Backend answers with any status (200, 404, 500, 503, ...) | that status, headers and body: **not** a gateway error |
+| Connection refused / reset / unreachable, name not resolvable | `502` |
+| Backend closes or resets before or during the response, invalid HTTP, informational/unexpected response, header or body over the limit | `502` |
+| Connect timeout, upstream timeout (also while the body is stalling) | `504` |
+| Service known but nothing routable, registry unavailable, proxy shutting down | `503` |
+| Malformed `/proxy` URL | `400`; unknown service `404` |
+
+Gateway error bodies are JSON (`{"error","status","detail"}`) with a generic detail and the `X-Request-Id`; internal addresses and error texts go to the log only. A backend failure never closes the client connection abnormally.
+
+### Connection counts
+
+For the duration of a proxied request the chosen instance's `connection_count` is `+1` (after routing, before the request is forwarded) and then `-1`, through the atomic `ServiceRegistry::adjustConnectionCount`. The decrement is part of the single completion path, so it happens on success, backend failure, timeout, malformed or oversize response, cancellation and shutdown alike, and **before the response is handed back to the client**: a client that sends its next request immediately never finds the previous one still counted, which is what Least Connections needs. The routing decision itself does not touch the count. If the increment fails (database down) the request still proceeds, is not counted, and is not decremented (logged).
+
+### Asynchronous design and the blocking registry
+
+A slow backend or database never occupies a client-side I/O worker. Three groups of threads: the server's I/O workers (client sockets), the proxy's upstream I/O threads (`proxy.io_threads`, backend sockets and timers, every exchange serialised on its own strand), and a small lookup thread pool (sized to `database.pool_size`) that runs the blocking registry calls: `route`, `+1`, `-1`. The routable set is still read from PostgreSQL on every request (no cache; Phase 6 does not add one), so a proxied request costs three database round trips (read, increment, decrement), the last one before the response is returned. This is a measured-later cost, not a hidden one. The lookup queue is unbounded, but each queued item belongs to a request of an accepted connection, which `server.max_connections` bounds.
+
+### Response buffering and limits
+
+Requests and responses are buffered (`string_body`). Request bodies are bounded by `server.max_request_body_bytes` (1 MiB default, 413 beyond); backend responses by `proxy.max_response_bytes` (16 MiB default, `502` beyond): the exchange is aborted, the connection discarded, nothing oversized is passed on. Backend response headers are limited to 64 KiB. Large uploads or downloads beyond these limits would need streaming, which is not implemented.
+
+### Shutdown
+
+The proxy is registered with the shutdown coordinator before the health checker and the HTTP server, so it stops after both. The server stops first (no new connections; in-flight proxied requests may finish within `shutdown.grace_period_seconds` and are answered `Connection: close`; when the period ends the remaining connections are closed by force, which cancels their upstream exchanges). `ProxyHandler::stop()` then refuses new proxy requests (`503`), cancels whatever is left (a waiting caller gets `503`), waits until every operation handed its response back and released its connection count, closes the pool and joins the threads. Nothing is left hanging and nothing leaks a count (tested at the server level, at the handler level and against real PostgreSQL).
+
+### Configuration (`proxy.*`, default off; requires `database.enabled`)
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | `false` | mount the proxy |
+| `connect_timeout_ms` | `2000` | resolve + connect bound (10-60000), `504` |
+| `upstream_timeout_ms` | `30000` | whole-exchange bound (10-600000, not below the connect timeout), `504` |
+| `io_threads` | `2` | upstream I/O threads (1-64) |
+| `max_idle_connections` | `32` | idle connections kept per backend (0-1024; 0 = no reuse) |
+| `idle_timeout_ms` | `30000` | idle connection lifetime (10-3600000) |
+| `max_response_bytes` | `16777216` | largest accepted backend response body (1024-268435456), `502` |
+
+### Known limitations
+
+- A client that disconnects while its request waits for the backend is noticed when the response is written (the exchange still ends at the upstream deadline, which releases everything); half-closed clients that wait for the response are therefore served normally.
+- Idle pooled connections of a backend that is never contacted again are only evicted the next time the pool is used, or at shutdown.
+- HTTP/1.1 over plain TCP to backends only: no TLS upstream, no `Upgrade`/WebSocket, no `CONNECT`, no HTTP/2; `Expect: 100-continue` is not implemented (stripped); chunked trailers are dropped.
+- `X-Forwarded-For` extends whatever chain the client sent (there is no trusted-proxy list); `X-Forwarded-Proto` is always `http`.
+- Consistent hashing is keyed by the client address, not by a configurable header.
+- The routable set is read from PostgreSQL for every request and each proxied request adds two counter writes; one strategy applies to all services; the lookup queue is FIFO and shared by routing and release.
+- No retry, backoff, circuit breaker, failover or graceful degradation (Phase 7), no cache or rate limiting (Phase 8), no metrics (Phase 9). No performance figure has been measured.

@@ -13,11 +13,16 @@ add_executable(edgeflow_tests
   discovery/ProberTest.cpp
   discovery/ValidationTest.cpp
   logging/LoggerTest.cpp
+  network/AsyncHandlerTest.cpp
   network/HealthProbeTest.cpp
   network/HttpServerTest.cpp
   network/RegistryApiTest.cpp
   network/RequestHandlerTest.cpp
   network/TcpServerTest.cpp
+  proxy/ProxyHandlerTest.cpp
+  proxy/ProxyHeadersTest.cpp
+  proxy/ProxyPostgresTest.cpp
+  proxy/UpstreamPoolTest.cpp
   routing/RoutingPostgresTest.cpp
   routing/RouterTest.cpp
   routing/StrategyTest.cpp

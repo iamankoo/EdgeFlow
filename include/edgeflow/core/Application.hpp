@@ -14,6 +14,7 @@
 #include "edgeflow/logging/Logger.hpp"
 #include "edgeflow/network/HttpServer.hpp"
 #include "edgeflow/network/RequestHandler.hpp"
+#include "edgeflow/proxy/ProxyHandler.hpp"
 #include "edgeflow/routing/Router.hpp"
 
 namespace edgeflow::core {
@@ -68,6 +69,8 @@ class Application {
   }
   // The router (null unless `database.enabled` and no custom request handler).
   [[nodiscard]] std::shared_ptr<routing::Router> router() const noexcept { return router_; }
+  // The reverse proxy (null unless `proxy.enabled` and no custom request handler).
+  [[nodiscard]] proxy::ProxyHandler* proxyHandler() const noexcept { return proxy_.get(); }
   // The running health checker (null unless `health_check.enabled`).
   [[nodiscard]] discovery::HealthChecker* healthChecker() const noexcept {
     return health_checker_.get();
@@ -84,6 +87,7 @@ class Application {
   std::unique_ptr<SignalHandler> signals_;
   std::shared_ptr<discovery::ServiceRegistry> registry_;  // set when database.enabled
   std::shared_ptr<routing::Router> router_;               // set when database.enabled
+  std::shared_ptr<proxy::ProxyHandler> proxy_;            // set when proxy.enabled
   std::unique_ptr<discovery::HealthChecker> health_checker_;
   std::unique_ptr<network::HttpServer> http_server_;
 

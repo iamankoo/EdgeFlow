@@ -124,6 +124,18 @@ bool Application::initializeRegistry(std::shared_ptr<network::RequestHandler>& h
   logger_->info("service registry ready (PostgreSQL {}:{}/{}, {} migration(s) applied, "
                 "pool size {}), routing strategy {}", db.host, db.port, db.name, report.applied,
                 db.pool_size, router_->strategy());
+
+  if (config_.proxy.enabled) {
+    // Outermost handler: /proxy/... is forwarded, everything else reaches the registry API
+    // and the local endpoints exactly as before. Registered for shutdown before the HTTP
+    // server and the health checker, so (shutting down in reverse) it stops after both: the
+    // server has then answered or cancelled every client, and the registry is still alive
+    // while the proxy releases the connection counts of its last requests.
+    proxy_ = std::make_shared<proxy::ProxyHandler>(handler, router_, registry_, config_.proxy,
+                                                   db.pool_size, logger_);
+    shutdown_.registerComponent("reverse-proxy", [this] { proxy_->stop(); });
+    handler = proxy_;
+  }
   return true;
 }
 

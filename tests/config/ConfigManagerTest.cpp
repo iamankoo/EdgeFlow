@@ -392,4 +392,79 @@ TEST(ConfigManagerHealthCheckTest, ComposeConfigurationEnablesHealthChecking) {
   EXPECT_FALSE(shipped.config().health_check.enabled);
 }
 
+TEST(ConfigManagerProxyTest, DefaultsAreOffAndSensible) {
+  ConfigManager manager;
+  ASSERT_TRUE(manager.loadFromString("server:\n  port: 8080\n"));
+  const auto& proxy = manager.config().proxy;
+  EXPECT_FALSE(proxy.enabled) << "earlier configurations keep working unchanged";
+  EXPECT_EQ(proxy.connect_timeout, std::chrono::milliseconds{2000});
+  EXPECT_EQ(proxy.upstream_timeout, std::chrono::milliseconds{30000});
+  EXPECT_EQ(proxy.io_threads, 2U);
+  EXPECT_EQ(proxy.max_idle_connections, 32U);
+  EXPECT_EQ(proxy.idle_timeout, std::chrono::milliseconds{30000});
+  EXPECT_EQ(proxy.max_response_bytes, 16U * 1024U * 1024U);
+}
+
+TEST(ConfigManagerProxyTest, ParsesEveryKey) {
+  ConfigManager manager;
+  ASSERT_TRUE(manager.loadFromString(
+      "database:\n  enabled: true\n"
+      "proxy:\n  enabled: true\n  connect_timeout_ms: 500\n  upstream_timeout_ms: 8000\n"
+      "  io_threads: 6\n  max_idle_connections: 0\n  idle_timeout_ms: 1500\n"
+      "  max_response_bytes: 4096\n"));
+  const auto& proxy = manager.config().proxy;
+  EXPECT_TRUE(proxy.enabled);
+  EXPECT_EQ(proxy.connect_timeout, std::chrono::milliseconds{500});
+  EXPECT_EQ(proxy.upstream_timeout, std::chrono::milliseconds{8000});
+  EXPECT_EQ(proxy.io_threads, 6U);
+  EXPECT_EQ(proxy.max_idle_connections, 0U) << "zero switches connection reuse off";
+  EXPECT_EQ(proxy.idle_timeout, std::chrono::milliseconds{1500});
+  EXPECT_EQ(proxy.max_response_bytes, 4096U);
+}
+
+TEST(ConfigManagerProxyTest, RejectsUnknownKeysAndInvalidValues) {
+  ConfigManager unknown;
+  EXPECT_FALSE(unknown.loadFromString("proxy:\n  retries: 3\n"));
+  EXPECT_TRUE(anyErrorContains(unknown, "unknown key 'proxy.retries'")) << "no retry setting exists in this phase";
+
+  for (const char* bad : {"enabled: sometimes", "connect_timeout_ms: 9", "connect_timeout_ms: 60001",
+                          "upstream_timeout_ms: 9", "upstream_timeout_ms: 600001", "io_threads: 0",
+                          "io_threads: 65", "max_idle_connections: -1", "max_idle_connections: 1025",
+                          "idle_timeout_ms: 9", "idle_timeout_ms: 3600001", "max_response_bytes: 1023",
+                          "max_response_bytes: 268435457", "upstream_timeout_ms: soon"}) {
+    ConfigManager manager;
+    EXPECT_FALSE(manager.loadFromString(std::string{"proxy:\n  "} + bad + "\n")) << bad;
+    EXPECT_TRUE(anyErrorContains(manager, "proxy.")) << bad;
+  }
+  ConfigManager not_a_map;
+  EXPECT_FALSE(not_a_map.loadFromString("proxy: yes\n"));
+}
+
+TEST(ConfigManagerProxyTest, ConnectTimeoutMayNotExceedTheUpstreamTimeout) {
+  ConfigManager manager;
+  EXPECT_FALSE(manager.loadFromString("proxy:\n  connect_timeout_ms: 3000\n  upstream_timeout_ms: 2000\n"));
+  EXPECT_TRUE(anyErrorContains(manager, "'proxy.connect_timeout_ms' (3000) must not exceed 'proxy.upstream_timeout_ms' (2000)"));
+  ConfigManager equal;
+  EXPECT_TRUE(equal.loadFromString("proxy:\n  connect_timeout_ms: 2000\n  upstream_timeout_ms: 2000\n"));
+}
+
+TEST(ConfigManagerProxyTest, ProxyingRequiresTheRegistry) {
+  ConfigManager manager;
+  EXPECT_FALSE(manager.loadFromString("proxy:\n  enabled: true\n"));
+  EXPECT_TRUE(anyErrorContains(manager, "'proxy.enabled' requires 'database.enabled'"));
+  ConfigManager both;
+  EXPECT_TRUE(both.loadFromString("database:\n  enabled: true\nproxy:\n  enabled: true\n"));
+  ConfigManager disabled;
+  EXPECT_TRUE(disabled.loadFromString("proxy:\n  enabled: false\n")) << "a disabled section needs no database";
+}
+
+TEST(ConfigManagerProxyTest, ShippedConfigurations) {
+  ConfigManager compose;
+  ASSERT_TRUE(compose.load(std::filesystem::path{EDGEFLOW_DEFAULT_CONFIG}.parent_path() / "config.compose.yaml"));
+  EXPECT_TRUE(compose.config().proxy.enabled);
+  ConfigManager shipped;
+  ASSERT_TRUE(shipped.load(std::filesystem::path{EDGEFLOW_DEFAULT_CONFIG}));
+  EXPECT_FALSE(shipped.config().proxy.enabled);
+}
+
 }  // namespace

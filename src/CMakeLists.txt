@@ -53,6 +53,10 @@ add_library(edgeflow_core STATIC
   routing/RoundRobin.cpp
   routing/Router.cpp
   routing/WeightedRouting.cpp
+  proxy/ProxyHandler.cpp
+  proxy/ProxyHeaders.cpp
+  proxy/UpstreamClient.cpp
+  proxy/UpstreamPool.cpp
   storage/Migrator.cpp
   storage/Postgres.cpp
   "${EDGEFLOW_MIGRATIONS_SOURCE}")

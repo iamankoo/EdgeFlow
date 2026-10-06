@@ -2,7 +2,38 @@
 
 **This file is the resume point for the project.** Tomorrow's session: read this file first, then [Phases.md](Phases.md) (authoritative roadmap), then inspect `git log` and confirm the state below before doing anything. After every completed phase, update this file.
 
-**Checkpoint:** end of 2026-10-03. **Phases 1-5 are COMPLETE. Phase 6 is NOT STARTED** and must not be started without explicit authorization from the owner.
+
+**Checkpoint (UPDATED 2026-10-06): Phases 1-6 are COMPLETE. Phase 6 (reverse proxy) is committed as ONE commit, `feat: implement EdgeFlow phase 6 reverse proxy` (its hash is in `git log`; this file is part of that commit and cannot contain its own hash). PHASE 7 HAS NOT STARTED.** Section 9A describes Phase 6; sections 10-12 are updated to the end of Phase 6.
+
+---
+
+## 0. RESUME POINT — Phase 6 complete, Phase 7 not started
+
+Phase 7 (Reliability Engineering: retries, backoff, circuit breaker, failover, graceful degradation) must only start after explicit authorization from the owner. Before anything else: read this file, then `Phases.md`, run `git log --oneline -8` / `git status`, and confirm `HEAD == origin/main` with a clean tree.
+
+### Final Phase 6 validation (all measured; remote CI NOT confirmed)
+
+- **Docker Release image build** (`docker build -t edgeflow:phase6 .`, Release `-Werror`, `BUILD_JOBS=2`): succeeded; the in-image CTest run (no database) reported 100% passed, 0 failed out of 507 (database tests skipped, 55).
+- **507 CTest tests** (379 before Phase 6): GCC Debug, GCC Release and Clang 18 Debug all 507/507 with PostgreSQL, all `-Werror`; without a database 452 pass, 55 skipped, 0 failed. Proxy/pool/async/HTTP-server/Postgres-proxy suites passed 12 consecutive runs. ThreadSanitizer: 0 warnings on 124 proxy/pool/async/HTTP-server/Application tests. ASan+UBSan: 124 proxy/pool/async/HTTP-server/Application tests, 0 reports.
+- **Docker Compose runtime demonstration** (real PostgreSQL, real health checker, Python backend containers): results in section 9A.
+- Two bugs found by validation and fixed before the commit: a test-helper lifetime bug (TSan) and the connection-count release ordering (count is released before the response is handed back).
+
+### Git identity (resolved 2026-10-06)
+
+The owner's Phase 6 instruction fixes author AND committer to **`Aniket Raj <aniketraj00384@gmail.com>`** (GitHub account `iamankoo`). Phases 1-5 and the summary commit were authored as `iamankoo <aniketraj00384@gmail.com>`; they are not rewritten. Use `Aniket Raj` for all future commits (repository-local git config), still with no Claude/Anthropic/OpenAI/ChatGPT/AI attribution and no `Co-authored-by` or any other trailer.
+
+### Environment notes (carried forward)
+
+- Docker Desktop must be started (`C:\Program Files\Docker\Docker\Docker Desktop.exe`). Build image: `edgeflow:dev3` (compilers, libpq-dev); `edgeflow:valtools` has curl and python3 but not libpq-dev. Mount the repo read-only at `/src`, a named volume at the build dir (`ef_build`, `ef_build_rel`, `ef_build_clang`, `ef_build_asan`), network `ef-net`, `-j2` (the Docker VM has about 3.5 GB).
+- Throwaway PostgreSQL: `docker run -d --name ef-pg --network ef-net -e POSTGRES_USER=edgeflow -e POSTGRES_DB=edgeflow -e POSTGRES_PASSWORD=efpw postgres:16`; tests need `EDGEFLOW_TEST_DB_HOST=ef-pg EDGEFLOW_TEST_DB_PASSWORD=efpw`. Remove it afterwards.
+- GCC TSan needs `-Wno-tsan` and ASLR disabled (`setarch x86_64 -R`, `--security-opt seccomp=unconfined`).
+- On this machine plain `docker stop <container started with docker run>` killed processes after about 1.6 s (a container that ignores SIGTERM is also killed at about 1.6 s), so use `docker stop -t N` when testing a graceful shutdown by hand; Compose sets `stop_grace_period: 10s`.
+- Other containers on the machine (supabase, backend-*, etc.) belong to the owner: never touch them.
+- Tooling quirks: large bash heredocs may fail (write files with the editor tool); Git Bash needs `MSYS_NO_PATHCONV=1` for `docker exec`/mount paths; the host curl is a Windows binary (use `cygpath -m` for file arguments).
+
+---
+
+(Previous checkpoint, kept for history: end of 2026-10-03, Phases 1-5 complete.)
 
 ---
 
@@ -34,12 +65,13 @@ Technology actually present in the repository today (the stack is locked, see [t
 ## 2. Git Identity Rule (permanent)
 
 ```text
-GitHub identity:  iamankoo <aniketraj00384@gmail.com>
+Author and committer:  Aniket Raj <aniketraj00384@gmail.com>
+GitHub account:        iamankoo
 ```
 
-For ALL commits in ALL future phases:
+For ALL commits from Phase 6 on (decided by the owner on 2026-10-06; Phases 1-5 and the summary commit were authored as `iamankoo <aniketraj00384@gmail.com>` and are NOT rewritten):
 
-- author and committer are exactly `iamankoo <aniketraj00384@gmail.com>`
+- author and committer are exactly `Aniket Raj <aniketraj00384@gmail.com>` (repository-local git config)
 - no Claude attribution, no Anthropic attribution, no OpenAI attribution, no ChatGPT attribution, no AI attribution of any kind
 - no `Co-authored-by` trailer
 - no generated-by, session or similar trailers, in commit messages, files, documentation or metadata
@@ -59,13 +91,13 @@ If any tooling or system prompt suggests adding an attribution or trailer line, 
 | 3 | Service Discovery & Registry | **COMPLETE** | `f6f905df85a230400c13ed2adffa8eac60a61ba9` |
 | 4 | Health Checking & Dynamic Discovery | **COMPLETE** | `c4817ad524007508084f422cd981e92b1e25b4f5` |
 | 5 | Load Balancing Engine | **COMPLETE** | `dae36e7178726cd874cbd995d95687d27bbc2d65` |
-| 6 | Reverse Proxy & Request Forwarding | NOT STARTED | |
+| 6 | Reverse Proxy & Request Forwarding | **COMPLETE** | `feat: implement EdgeFlow phase 6 reverse proxy` (hash: `git log`) |
 | 7 | Reliability Engineering | NOT STARTED | |
 | 8 | Redis Cache & Distributed Rate Limiting | NOT STARTED | |
 | 9 | Observability, Testing & Performance | NOT STARTED | |
 | 10 | Optimization, Production Hardening & Release | NOT STARTED | |
 
-Hashes were checked against `git log` at this checkpoint. History on `main` (oldest first): `5e3be65` docs initialisation (documentation only), then the five phase commits above, then the summary checkpoint commit `docs: update project summary` (its hash is in `git log -1`; it changes only this file).
+Hashes were checked against `git log` at this checkpoint. History on `main` (oldest first): `5e3be65` docs initialisation (documentation only), then the five phase commits above, then the summary checkpoint commit `docs: update project summary` (changes only that file), then the Phase 6 commit.
 
 Test counts per phase (all with `-Werror`; "skipped" means tests needing a real PostgreSQL when none is configured, reported by CTest as skipped, never silently passed):
 
@@ -75,7 +107,8 @@ Test counts per phase (all with `-Werror`; "skipped" means tests needing a real 
 | 2 | 127 | |
 | 3 | 192 | 30 need PostgreSQL |
 | 4 | 272 | 42 need PostgreSQL |
-| 5 | **379** | **49 need PostgreSQL**: 330 pass + 49 skipped without a database; 379/379 pass with one |
+| 5 | 379 | 49 need PostgreSQL: 330 pass + 49 skipped without a database; 379/379 pass with one |
+| 6 | **507** | **55 need PostgreSQL**: 452 pass + 55 skipped without a database; 507/507 pass with one |
 
 ## 4. Standing Rules
 
@@ -167,7 +200,7 @@ any status + UNHEALTHY or UNKNOWN = NOT routable
 
 ---
 
-## 9. Phase 5 — Load Balancing Engine (TODAY'S WORK; commit `dae36e7178726cd874cbd995d95687d27bbc2d65`, `feat: implement EdgeFlow phase 5 load balancing`)
+## 9. Phase 5 — Load Balancing Engine (completed 2026-10-03; commit `dae36e7178726cd874cbd995d95687d27bbc2d65`, `feat: implement EdgeFlow phase 5 load balancing`)
 
 **Phase 5 is complete.** Exit condition ("requests can be distributed among healthy backend instances using all four strategies") was demonstrated in tests and on real containers.
 
@@ -238,59 +271,112 @@ Backends a, b, c healthy; d answers HTTP 500 (unhealthy) and has the best-lookin
 
 ---
 
-## 10. Current Architecture (end of Phase 5)
+## 9A. Phase 6 — Reverse Proxy & Request Forwarding (completed 2026-10-06; commit `feat: implement EdgeFlow phase 6 reverse proxy`)
+
+**Phase 6 is complete.** Exit condition ("Client -> EdgeFlow -> Backend -> EdgeFlow -> Client works reliably") was demonstrated in tests and on real containers (PostgreSQL + health checker + backend containers). The commit hash is the one in `git log` for that message. Full design: [architecture.md](architecture.md) section 22.
+
+### What was built
+
+- **Service mapping `/proxy/{service}/...`**: prefix stripped, path and query forwarded verbatim (`/proxy/orders/` -> `/`, `/proxy/orders/api/users?id=42` -> `/api/users?id=42`). `/proxy`, `/proxy/`, an invalid service name -> `400`; unknown service -> `404`. `/`, `/health`, `/echo`, `/services/...` unchanged; `GET /services/{svc}/route` is still only a decision.
+- **`proxy` module** (`include/edgeflow/proxy/`, `src/proxy/`, `tests/proxy/`): `ProxyHandler` (outermost request handler, owns the operations and threads), `ProxyHeaders` (pure URL/header/request-id rules), `UpstreamPool` (idle keep-alive connections), `UpstreamClient` (one request to one backend).
+- **Asynchronous request boundary** (the design question the Phase 5 summary left open): `RequestHandler::handleAsync(request, RequestContext, done) -> CancelFunction`; the default calls the synchronous `handle()` inline, so every Phase 1-5 handler is unchanged. `HttpConnection` in state `Handling` no longer blocks its strand/worker: the answer comes through a callback (any thread, first answer wins) re-posted onto the connection's strand; closing the connection (forced close at the end of the grace period) calls the cancel function. A graceful drain lets the request finish and answers `Connection: close`. The handler learns the client address. HEAD responses keep the backend's `Content-Length`.
+- **Threading**: server I/O workers (client sockets) are never blocked by a backend or the database. The proxy has its own `io_context` (`proxy.io_threads`, every exchange serialised on its own strand) and a small thread pool for the **blocking registry calls** (`route`, `+1`, `-1`; sized to `database.pool_size`). No routing cache was introduced (Phase 8 territory); the routable set is still read from PostgreSQL per request.
+- **Routing**: `Router::route(service, {client address})` over the Phase 4 routable view; all four strategies work; consistent hashing is keyed by the client address. No health logic, no PostgreSQL selection, no `LoadBalancer` bypass in the proxy.
+- **Header propagation**: hop-by-hop headers (`Connection`, `Keep-Alive`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`, `Proxy-*`, anything named by `Connection`/`Trailer`) never cross; `Expect` and `Content-Length` are dropped and recomputed; `Host` rewritten to the instance; `X-Forwarded-For` extends the chain; `X-Forwarded-Proto: http`; `Via: 1.1 edgeflow` on request and response; repeated headers (Set-Cookie) preserved.
+- **Request ids**: client `X-Request-Id` (1-128 visible ASCII) preserved, otherwise a random UUID v4; sent upstream, returned to the client (also on gateway errors), present in log lines `proxy [<id>] ...`.
+- **Connection reuse and pool**: per-backend idle LIFO pool, cap `proxy.max_idle_connections` (0 = off), TTL `proxy.idle_timeout_ms`, liveness check at check-out (non-blocking peek: EOF, reset or unsolicited bytes -> dropped), eviction on use, `close()` at shutdown. Reusable only after a complete keep-alive response with nothing left over; every error path discards.
+- **Stale pooled connection safeguard (approved, strictly limited)**: a pooled connection found dead **before any request byte was written** (at check-out, or a first write that wrote 0 bytes) is discarded and the request goes out once on a fresh connection. Never after the first byte, never on a fresh connection, never on an HTTP status; no counter, backoff, breaker or failover. Verified: stale connection replaced and request sent exactly once; a request already sent to a backend that then hangs up is NOT repeated (502, one request seen by the backend, no new connection).
+- **Timeouts**: `proxy.connect_timeout_ms` (resolve + connect) and `proxy.upstream_timeout_ms` (whole exchange, including a body that stalls) both answer `504`, cancel the timers, close the connection (never pooled), release the count; the client's connection stays usable.
+- **Failure mapping**: backend status codes (incl. 4xx/5xx) are forwarded unchanged; `502` refused/reset/closed early/invalid HTTP/oversize/unresolvable name; `504` timeouts; `503` nothing routable, registry unavailable, shutting down. Bodies are generic JSON (no internal addresses) with the request id. A backend failure never closes the client connection.
+- **Connection counting**: `adjustConnectionCount(+1)` after routing, `-1` on every outcome (success, failure, timeout, malformed/oversize, cancellation, shutdown) **before the response is handed back** (found during validation: releasing it after the response made a sequential client's next request see the previous one still counted, which broke Least Connections; the release is now part of the single completion path). The routing decision itself never touches the count. If the `+1` fails the request proceeds uncounted (logged).
+- **Buffering and limits**: string bodies; requests bounded by `server.max_request_body_bytes` (413), responses by `proxy.max_response_bytes` (default 16 MiB, `502` beyond, connection discarded), response headers 64 KiB.
+- **Shutdown**: `reverse-proxy` is registered with the shutdown coordinator before the health checker and the HTTP server, so it stops last of the three. The server drains/force-closes (cancelling upstream exchanges); `ProxyHandler::stop()` refuses new proxy requests (503), cancels what is left, waits until every operation has answered and released its count, closes the pool, joins the threads. Idempotent.
+- **Configuration `proxy.*`** (strict, default off, requires `database.enabled`): `enabled`, `connect_timeout_ms` (2000), `upstream_timeout_ms` (30000, not below the connect timeout), `io_threads` (2), `max_idle_connections` (32), `idle_timeout_ms` (30000), `max_response_bytes` (16 MiB). `config/config.yaml` ships it off; `config/config.compose.yaml` enables it (5 s upstream timeout). Compose image tag is now `edgeflow:phase6`.
+
+### Phase 6 testing
+
+- **507 CTest tests** (379 before; +128): header/mapping/request-id/pool unit tests, 66 end-to-end `ProxyTest` tests against scripted real TCP backends (forwarding, bodies, headers, request ids, reuse, stale connections, timeouts, malformed/oversize responses, 502/503/504 mapping, connection counts, shutdown), `AsyncHandlerTest` (async boundary, cancellation, close during handling), `ConfigManagerProxyTest`, and 6 `ProxyPostgresTest` on real PostgreSQL + the health checker + `Application`.
+- **GCC Debug, GCC Release, Clang 18 Debug: 507/507 pass with PostgreSQL** (all `-Werror`). Without a database: **452 pass, 55 skipped, 0 failed** (55 = 49 earlier + 6 `ProxyPostgresTest`). The Docker Release image build (no database) reported the same: 100% passed, 0 failed of 507.
+- **Repeats:** the proxy/pool/async/HTTP-server/Postgres-proxy suites (117 tests) passed 12 consecutive runs.
+- **ThreadSanitizer** (GCC, `-Wno-tsan`, `setarch x86_64 -R`): 124 proxy/pool/async/HttpServer/Application tests, 0 warnings after fixing a test-helper destruction-order bug (`UpstreamPoolTest::Loopback`; test code only).
+- **Bugs found and fixed during validation:** the connection count was released after the response (Least Connections saw a finished request as active); now released first.
+- **AddressSanitizer + UBSan** (GCC, `-fsanitize=address,undefined -O1`, `detect_leaks=1`, real PostgreSQL): the same 124 proxy/pool/async/HttpServer/Application tests passed, with 0 sanitizer reports.
+
+### Phase 6 runtime validation
+
+Docker Compose (`edgeflow:phase6`, `postgres:16`, `config.compose.yaml`: HTTP health checks every 2 s, round robin, 2 s connect and 5 s upstream timeout), real Python HTTP/1.1 backend containers `a`, `b` (healthy), `c` (`/health` answers 500, unhealthy), `s` (solo service); throwaway helper, not in the repository. Everything below is the literal observed behaviour of a single run on a development machine; **no performance claim is made**.
+
+- **Startup log:** `reverse proxy ready: /proxy/{service}/..., connect timeout 2000ms, upstream timeout 5000ms, up to 32 idle connection(s) per backend, 2 I/O thread(s)`. Routable set of `demo` = `a`, `b` only; `c` shows `unhealthy`.
+- **Mapping, headers, request id:** `GET /proxy/demo/api/users/7?x=1&y=two%20words&z=` reached backend `a` as target `/api/users/7?x=1&y=two%20words&z=` with `X-Custom`, `Authorization` preserved, `Host: ef-be-a:9000`, `X-Forwarded-Proto: http`, `X-Forwarded-For: 172.31.0.1`, `Via: 1.1 edgeflow` and the client's `X-Request-Id: client-req-123`, which was also returned to the client together with the backend's `X-Backend` and a `Via` header. Without a client id two calls returned two different generated UUIDs.
+- **Bodies and methods:** a 2000-byte POST body arrived complete (`body_length` 2000, `Content-Length` recomputed); a JSON POST (17 bytes), PUT and DELETE were forwarded with the right method; HEAD returned the backend's `Content-Length` with no body.
+- **Routing:** 10 requests to `demo` went 5 to `a` and 5 to `b`; `c` (unhealthy) never received one.
+- **Response headers:** two `Set-Cookie` headers were both delivered; the backend's `Keep-Alive` header was dropped.
+- **Backend statuses forwarded unchanged:** 201, 301, 400, 404, 418, 500, 503 (body of the 500 intact).
+- **Connection reuse:** before 40 sequential client requests the solo backend had seen 1 connection and 14 requests; afterwards **1 connection and 54 requests**; three further calls reported `connection_id` 1 with `requests_on_this_connection` 55, 56, 57 (health probes are not counted by the helper).
+- **Connection counts:** `connection_count` 0 before, **1 during** a 3 s request (that request returned 200 in 3.01 s), 0 after; with 3 concurrent 2.5 s requests it was **3 during** and 0 after.
+- **502:** backend closing without answering -> `502 the backend closed the connection without a complete response`; connection reset -> the same; garbage bytes -> `502 the backend sent an invalid response`; instance on a live host with a closed port (forced `healthy`) -> `502 the backend could not be reached` in about 13 ms. The backend stayed usable afterwards (200).
+- **504:** a backend sleeping 7 s -> `504 the backend did not respond in time` after **5.02 s** (`upstream_timeout_ms` 5000); counts back to 0. A backend container stopped while still registered (its address no longer answers) also gave 504, about the connect timeout, and its count returned to 0.
+- **503 / 404 / 400:** a service whose only instance is unhealthy -> 503 (also `refused` after the health checker corrected it, and `solo` about 7 s after its container was stopped); never-registered service -> 404; `/proxy/` -> 400; invalid service name -> 400. When the stopped backend was started again it was routable and served 200 again.
+- **Stale pooled connection:** after a warm request the backend container was restarted (`docker restart`), and the next request returned **200 on a new upstream connection** (`requests_on_this_connection` 1). Whether the safeguard replaced a dead pooled connection or the pool had already dropped it is not distinguishable from the client side; the unit and end-to-end tests cover the exact rule (see above).
+- **Graceful shutdown, request in flight:** `docker stop edgeflow` with a 3 s request in flight (grace 5 s): the request returned **200 in 3.01 s**, the log shows `waiting up to 5000ms for 1 connection(s) to finish`, then the server, health checker and `reverse-proxy` stopped in order, exit code 0.
+- **Shutdown outliving the grace period** (a second container with `grace_period_seconds: 1`, a 4.5 s request, `docker stop -t 30`): `1 connection(s) still open after the grace period; closing them`, the proxy logged `upstream cancelled ... (503)`, the proxy stopped, exit code 0, and the instance's `connection_count` was released (unchanged by the cancelled request).
+- **Finding (not an EdgeFlow defect, documented):** with Docker's default `docker stop` on this machine the process was SIGKILLed after about 1.6 s (exit 137) — the same happens to a container that ignores SIGTERM — so two such runs left `connection_count` stuck at +1 each. Counts are not reconciled after a hard kill or crash.
+- **Cleanup:** the demo stack (`docker compose down -v`), backend containers and the throwaway second EdgeFlow were removed.
+
+### Phase 6 limitations (real, not achievements)
+
+- A client that disconnects while its request waits for the backend is noticed only when the response is written; the exchange still ends at the upstream deadline, which releases everything. Half-closed clients are therefore served normally.
+- Idle pooled connections of a backend that is never contacted again are evicted the next time the pool is used (no reaper thread) or at shutdown.
+- HTTP/1.1 over plain TCP to backends only; no `Upgrade`/WebSocket, `CONNECT`, HTTP/2 or TLS upstream; `Expect: 100-continue` is stripped; chunked trailers dropped; requests/responses are buffered, not streamed.
+- `X-Forwarded-For` extends whatever chain the client sent (no trusted-proxy list). Consistent hashing is keyed by the client address, not by a header.
+- Every proxied request costs three PostgreSQL round trips (routable read, `+1`, `-1`), the last one before the response; the lookup queue is a shared FIFO. This is a measured-later cost: no routing cache exists (not added on purpose) and no performance figure has been measured.
+- `connection_count` is not reconciled after a hard kill (SIGKILL, crash, OOM): in-flight requests of a killed process leave their +1 behind (observed in the runtime demonstration). A graceful stop, including one that outlives the grace period, releases every count.
+- One strategy applies to all services; no retry/backoff/circuit breaker/failover (Phase 7); no cache or rate limiting (Phase 8); no metrics (Phase 9).
+- The remote GitHub Actions run has still not been confirmed (the workflow is unchanged and runs the same configurations that were run locally in containers).
+
+---
+
+---
+
+## 10. Current Architecture (end of Phase 6)
 
 ```text
 Client
    |
    v
 HTTP Server  (Boost.Asio/Beast, keep-alive, timeouts, graceful drain)        Phase 2
-   |
+   |   /proxy/{service}/...
    v
-Service Discovery / Registry  (PostgreSQL = source of truth)                 Phase 3
+Reverse Proxy  (async boundary, header rules, request ids, timeouts)         Phase 6
+   |        |
+   |        +--> UpstreamPool / UpstreamClient (keep-alive connections to backends)
+   v
+Router   (one snapshot per decision; one strategy)                           Phase 5
+   |   Round Robin | Least Connections | Weighted | Consistent Hashing
+   v
+Routable Instance View   (ACTIVE AND HEALTHY, lookupRoutable)                Phase 4
    |        ^
    |        +-- HealthChecker: TCP/HTTP probes -> state machine -> updateHealth   Phase 4
    v
-Routable Instance View   (ACTIVE AND HEALTHY, lookupRoutable)                Phase 4
-   |
-   v
-Router   (one snapshot per decision)                                         Phase 5
-   |
-   +--> Round Robin
-   +--> Least Connections
-   +--> Weighted Routing
-   +--> Consistent Hashing
-   |
-   v
-Selected Backend Instance        <-- Phase 5 STOPS HERE
+Service Discovery / Registry  (PostgreSQL = source of truth)                 Phase 3
 
-PHASE 6 WILL ADD THE ACTUAL REQUEST FORWARDING.
+Selected backend instance <-> EdgeFlow (forward request, return response)    Phase 6
 ```
 
-Module layout (`include/edgeflow/<module>/`, `src/<module>/`, `tests/<module>/`): `config` (strict YAML), `core` (Application, ShutdownCoordinator, SignalHandler, CommandLine), `logging`, `network` (TcpServer, HttpServer, HttpConnection, ConnectionTracker, Http helpers, RequestHandler/LocalRequestHandler, RegistryRequestHandler, HealthProbe), `storage` (Postgres wrapper, Migrator), `discovery` (ServiceInstance, ServiceRegistry, PostgresServiceRegistry, Validation, HealthState, Prober, NameResolver, HealthChecker), `routing` (LoadBalancer, Strategies, Router). SQL lives in `db/migrations/`.
+Module layout (`include/edgeflow/<module>/`, `src/<module>/`, `tests/<module>/`): `config` (strict YAML), `core` (Application, ShutdownCoordinator, SignalHandler, CommandLine), `logging`, `network` (TcpServer, HttpServer, HttpConnection, ConnectionTracker, Http helpers, RequestHandler/LocalRequestHandler, RegistryRequestHandler, HealthProbe), `storage` (Postgres wrapper, Migrator), `discovery` (ServiceInstance, ServiceRegistry, PostgresServiceRegistry, Validation, HealthState, Prober, NameResolver, HealthChecker), `routing` (LoadBalancer, Strategies, Router), `proxy` (ProxyHandler, ProxyHeaders, UpstreamPool, UpstreamClient). SQL lives in `db/migrations/`.
 
-Startup order in `Application::initialize()`: signal handlers -> (if `database.enabled`) pool, migrations, registry, `Router`, registry API wrapped around the local handler -> HTTP server -> (if `health_check.enabled`) health checker. Shutdown runs in reverse: HTTP server, then health checker, then signal handlers.
+Startup order in `Application::initialize()`: signal handlers -> (if `database.enabled`) pool, migrations, registry, `Router`, registry API wrapped around the local handler -> (if `proxy.enabled`) `ProxyHandler` as the outermost handler -> HTTP server -> (if `health_check.enabled`) health checker. Shutdown runs in reverse: HTTP server (drain, then force-close at the grace period), health checker, reverse proxy (`reverse-proxy` component), signal handlers.
 
-Configuration sections (`config/config.yaml`; every key documented there and in the README): `application`, `server`, `database` (off by default), `health_check` (off by default), `routing` (`round_robin` default), `shutdown`. Unknown keys and out-of-range values are rejected. `config/config.compose.yaml` enables database + HTTP health checks for Compose.
+Configuration sections (`config/config.yaml`; every key documented there and in the README): `application`, `server`, `database` (off), `health_check` (off), `routing` (`round_robin`), `proxy` (off), `shutdown`. Unknown keys and out-of-range values are rejected. `config/config.compose.yaml` enables database, HTTP health checks and the proxy for Compose.
 
-HTTP surface: `GET /`, `GET /health`, `POST /echo` (Phase 2); `GET /services`, `POST|GET /services/{svc}/instances`, `GET|PATCH|DELETE /services/{svc}/instances/{id}` (Phase 3); `GET /services/{svc}/routable` (Phase 4); `GET /services/{svc}/route[?key=K]` (Phase 5, decision only).
+HTTP surface: `GET /`, `GET /health`, `POST /echo` (Phase 2); `GET /services`, `POST|GET /services/{svc}/instances`, `GET|PATCH|DELETE /services/{svc}/instances/{id}` (Phase 3); `GET /services/{svc}/routable` (Phase 4); `GET /services/{svc}/route[?key=K]` (Phase 5, decision only); `/proxy/{service}/...` any method (Phase 6).
 
-Threading model: HTTP I/O on `server.worker_threads` Asio threads (handlers are synchronous); health checker = one probe/timer thread + one database thread; NameResolver lookups on detached per-host threads (max 16).
+Threading model: HTTP I/O on `server.worker_threads` Asio threads (the proxy answers asynchronously through `handleAsync`, so a backend never blocks them); the proxy has its own I/O threads (`proxy.io_threads`) and a small pool for blocking registry calls; health checker = one probe/timer thread + one database thread; NameResolver lookups on detached per-host threads (max 16).
 
 ## 11. What Is NOT Implemented Yet
 
 ```text
-Phase 6 (NEXT, not started):
-- request forwarding
-- response forwarding
-- header propagation
-- connection reuse
-- backend connection pooling
-- request IDs
-- upstream timeout
-- backend failure handling
-
-Phase 7:
+Phase 7 (NEXT, NOT STARTED):
 - retry
 - exponential backoff
 - circuit breaker
@@ -313,40 +399,13 @@ Phase 10:
 - final release
 ```
 
-Nothing above exists even partially in the repository. The only touch points are dependencies prepared for them: `Router::route` and `adjustConnectionCount` (Phase 6), the health transitions that Phase 7/9 may count, and `weight`/`connection_count` metadata.
+Nothing above exists even partially in the repository. Phase 6 deliberately has no retry beyond the single stale-pooled-connection safeguard, no circuit breaker, no failover, no cache, no routing cache, no metrics and no TLS.
 
-## 12. Next Step — Phase 6 (NOT STARTED)
+## 12. Next Step — Phase 7 (NOT STARTED; needs explicit owner authorization)
 
-**Next authorized phase: PHASE 6 — Reverse Proxy & Request Forwarding.** Exact requirements from `Phases.md`:
+Phase 7 is **Reliability Engineering** (see `Phases.md` for the exact list). Before starting: read this file and `Phases.md`, check `git log`/`git status`, confirm Phase 6 is committed and `HEAD == origin/main`, cross-check the Phase 7 prompt against `Phases.md`, and wait for authorization.
 
-- request forwarding
-- response forwarding
-- header propagation
-- connection reuse
-- backend connection pooling
-- request IDs
-- upstream timeout
-- backend failure handling
-
-**Exit condition:** Client -> EdgeFlow -> Backend -> EdgeFlow -> Client works reliably.
-
-**Phase 6 has NOT started.** Tomorrow, before doing anything:
-
-1. Read this `summary.md`.
-2. Read `Phases.md`.
-3. Inspect the latest commit(s) (`git log --oneline -8`, `git status`).
-4. Confirm Phase 5 is complete (`dae36e7`) and `HEAD == origin/main`.
-5. Cross-check the Phase 6 prompt against `Phases.md` and report any mismatch.
-6. Start Phase 6 only after explicit authorization from the owner.
-
-Facts worth knowing when designing Phase 6 (observations about the current code, not decisions):
-
-- `RequestHandler::handle(const HttpRequest&)` is synchronous and runs on an I/O worker; forwarding to a backend needs either an asynchronous handler path or a deliberate, bounded blocking strategy. This is the main design question for Phase 6.
-- `routing::Router::route(service, {key})` is the intended call per proxied request; it currently reads PostgreSQL on every call (no cache).
-- `ServiceRegistry::adjustConnectionCount(service, id, delta)` is the atomic primitive the proxy should use to maintain `connection_count` (Least Connections reads it); a routing decision itself must not change it.
-- `NameResolver` (per-host isolated lookups) and the `Prober` async operation are reusable patterns for backend connects; Beast parser/serializer helpers already exist in `network/Http.*`.
-- Routing selection is by service name; Phase 6 must define how a client request maps to a service (not defined yet).
-- Phase 7 will build retries/circuit breaking on top of Phase 6 behaviour; keep Phase 6 minimal and correct.
+Facts worth knowing when designing Phase 7 (observations, not decisions): the proxy has one attempt per request except the stale-pooled-connection safeguard (which must not be doubled up by a retry layer: a request whose first byte was sent must only be retried if it is safe to do so); `Router::route` returns one instance (failover needs "next candidate" selection); gateway errors are mapped in `ProxyHandler` (`statusFor`), a natural place for breaker outcomes; `connection_count` is released before the response is handed back and must stay so; the routable set is still a PostgreSQL read per decision (no routing cache); counts are not reconciled after a hard kill.
 
 ---
 
@@ -356,7 +415,7 @@ Facts worth knowing when designing Phase 6 (observations about the current code,
 - The Docker VM has **about 3.7 GB RAM**. Always build with `-j2` (the Dockerfile defaults to `BUILD_JOBS=2`); unbounded parallelism exhausted memory and hung the engine once.
 - Local helper images/volumes created during development (not in the repo, recreate if missing): `edgeflow:dev` -> `edgeflow:dev3` (Ubuntu 24.04, GCC 13, clang, cmake, ninja, git, libboost-dev, libpq-dev, postgresql-client); `edgeflow:valtools` (adds curl, netcat, python3); build volumes `ef_build` (GCC Debug), `ef_build_clang`, `ef_build_rel` (GCC Release); network `ef-net`.
 - Typical full validation: start a throwaway PostgreSQL (`postgres:16`, user/db `edgeflow`) on a Docker network, run the build container on that network with `EDGEFLOW_TEST_DB_HOST=<container>` plus optional `EDGEFLOW_TEST_DB_PORT/NAME/USER/PASSWORD`, then `cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DEDGEFLOW_WARNINGS_AS_ERRORS=ON && cmake --build /build -j2 && ctest --test-dir /build --output-on-failure`. Without `EDGEFLOW_TEST_DB_HOST` the database tests are skipped with a reason.
-- `docker build -t edgeflow:phase5 .` builds Release with `-Werror` and runs the tests (database tests skipped); `docker compose up -d --build` starts PostgreSQL + EdgeFlow with the registry, health checking and routing on (`EDGEFLOW_DB_PASSWORD` overrides the development-only default).
+- `docker build -t edgeflow:phase6 .` builds Release with `-Werror` and runs the tests (database tests skipped); `docker compose up -d --build` starts PostgreSQL + EdgeFlow with the registry, health checking, routing and the reverse proxy on (`EDGEFLOW_DB_PASSWORD` overrides the development-only default).
 - Tooling quirks: large bash heredocs can fail in this environment (write big files with an editor tool or a script file); Git Bash rewrites `/tmp/...` arguments passed to `docker exec` (set `MSYS_NO_PATHCONV=1`); poll result files that a background job writes only after the job truncated them (use a unique file per run), otherwise a stale file can be mistaken for a fresh result.
 - Do not leave test infrastructure running: remove throwaway containers, networks and volumes after a validation run.
 
@@ -374,6 +433,6 @@ What this requires the project to actually produce: a 10-instance backend deploy
 
 ## 15. Open Items
 
-- Remote GitHub Actions run: never confirmed for any phase (workflow updated through Phase 5; same configurations validated locally in containers).
+- Remote GitHub Actions run: never confirmed for any phase (workflow unchanged in Phase 6; same configurations validated locally in containers).
 - No performance measurements exist.
-- Known design limitations carried forward: synchronous request handler; PostgreSQL read per routing decision; one probe type and one routing strategy for all instances; `Expect: 100-continue` unsupported.
+- Known design limitations carried forward: PostgreSQL read per routing decision (no routing cache); one probe type and one routing strategy for all instances; `Expect: 100-continue` unsupported; buffered (not streamed) proxying; `connection_count` not reconciled after a hard kill.

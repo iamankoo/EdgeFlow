@@ -1,6 +1,7 @@
 #include "edgeflow/network/HttpConnection.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <exception>
 #include <utility>
 
@@ -47,8 +48,16 @@ void HttpConnection::start() {
   net::dispatch(socket_.get_executor(), [self = shared_from_this()] {
     boost::system::error_code ignored;
     const auto peer = self->socket_.remote_endpoint(ignored);
-    self->logger_->debug("connection #{} accepted from {}:{}", self->id_,
-                         peer.address().to_string(), peer.port());
+    if (!ignored) {
+      auto address = peer.address();
+      if (address.is_v6() && address.to_v6().is_v4_mapped()) {
+        address = net::ip::make_address_v4(net::ip::v4_mapped, address.to_v6());
+      }
+      self->peer_address_ = address.to_string();
+      self->peer_port_ = peer.port();
+    }
+    self->logger_->debug("connection #{} accepted from {}:{}", self->id_, self->peer_address_,
+                         self->peer_port_);
     self->doReadRequest();
   });
 }
@@ -168,32 +177,62 @@ void HttpConnection::onRequestComplete() {
   parser_.reset();
   ++requests_served_;
 
-  HttpResponse response;
+  RequestInfo info;
+  info.version = request.version();
+  info.keep_alive = request.keep_alive();
+  info.head = request.method() == http::verb::head;
+  info.method = std::string{request.method_string()};
+  info.target = std::string{request.target()};
+  const std::uint64_t sequence = ++handling_sequence_;
+
+  // The handler may answer from any thread, at any time (even before handleAsync returns):
+  // the response is always re-posted onto this connection's strand, and only the first
+  // answer counts.
+  const auto answered = std::make_shared<std::atomic<bool>>(false);
+  ResponseCallback done = [self = shared_from_this(), answered, info,
+                           sequence](HttpResponse response) {
+    if (answered->exchange(true)) return;
+    net::post(self->socket_.get_executor(),
+              [self, info, sequence, response = std::move(response)]() mutable {
+                self->onHandled(sequence, info, std::move(response));
+              });
+  };
+
   try {
-    response = handler_->handle(request);
+    cancel_ = handler_->handleAsync(request, RequestContext{peer_address_, peer_port_},
+                                    std::move(done));
   } catch (const std::exception& e) {
-    logger_->error("connection #{}: handler failed for {} {}: {}", id_,
-                   std::string_view{request.method_string()},
-                   std::string_view{request.target()}, e.what());
-    response = makeErrorResponse(request.version(), request.keep_alive(),
-                                 http::status::internal_server_error,
-                                 "the server failed to process the request");
+    logger_->error("connection #{}: handler failed for {} {}: {}", id_, info.method, info.target,
+                   e.what());
+    if (!answered->exchange(true)) {
+      onHandled(sequence, info,
+                makeErrorResponse(info.version, info.keep_alive,
+                                  http::status::internal_server_error,
+                                  "the server failed to process the request"));
+    }
   }
-  logger_->debug("connection #{}: {} {} -> {}", id_,
-                 std::string_view{request.method_string()}, std::string_view{request.target()},
+}
+
+void HttpConnection::onHandled(std::uint64_t sequence, const RequestInfo& info,
+                               HttpResponse response) {
+  if (closed_ || state_ != State::Handling || sequence != handling_sequence_) return;
+  cancel_ = nullptr;
+  logger_->debug("connection #{}: {} {} -> {}", id_, info.method, info.target,
                  response.result_int());
 
-  const bool keep_alive = request.keep_alive() && !draining_.load();
-  writeResponse(std::move(response), keep_alive);
+  const bool keep_alive = info.keep_alive && !draining_.load();
+  writeResponse(std::move(response), keep_alive, info.head);
 }
 
 void HttpConnection::sendError(http::status status, std::string_view detail) {
   writeResponse(makeErrorResponse(11, false, status, detail), false);
 }
 
-void HttpConnection::writeResponse(HttpResponse response, bool keep_alive) {
+void HttpConnection::writeResponse(HttpResponse response, bool keep_alive, bool head_request) {
   response.keep_alive(keep_alive);
-  response.prepare_payload();
+  const bool keeps_own_length = head_request && response.body().empty() &&
+                                response.find(http::field::content_length) != response.end();
+  if (!keeps_own_length) response.prepare_payload();
   state_ = State::Writing;
   armTimer(settings_.request_timeout);
 
@@ -262,6 +301,13 @@ void HttpConnection::close() {
   boost::system::error_code ignored;
   socket_.shutdown(net::ip::tcp::socket::shutdown_both, ignored);
   socket_.close(ignored);
+  if (cancel_) {
+    // The client is gone (or the server is closing it) while the handler still works on
+    // its request: let the handler abandon the work and release what it holds.
+    const auto cancel = std::move(cancel_);
+    cancel_ = nullptr;
+    cancel();
+  }
   logger_->debug("connection #{} closed after {} request(s)", id_, requests_served_);
 }
 
@@ -308,7 +354,7 @@ void HttpConnection::onTimeout() {
       close();
       break;
     case State::Handling:
-      break;  // the handler is synchronous; nothing to abort
+      break;  // no timer runs while a handler works (the handler bounds its own work)
   }
 }
 

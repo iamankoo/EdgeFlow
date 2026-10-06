@@ -77,6 +77,26 @@ struct RoutingConfig {
   RoutingStrategy strategy{RoutingStrategy::RoundRobin};
 };
 
+// Reverse proxy (Phase 6): forwards `/proxy/{service}/...` to a healthy instance chosen by
+// the router. Requires the service registry (`database.enabled`): the proxy only ever
+// forwards to what routing selects from the routable (active AND healthy) instances.
+struct ProxyConfig {
+  bool enabled{false};
+  // Bound for establishing the TCP connection to a backend (name resolution + connect).
+  // Exceeding it answers 504.
+  std::chrono::milliseconds connect_timeout{2000};
+  // Bound for the WHOLE upstream exchange (connect + send request + receive the complete
+  // response). Exceeding it answers 504. Must not be smaller than `connect_timeout`.
+  std::chrono::milliseconds upstream_timeout{30000};
+  unsigned io_threads{2};  // threads running upstream I/O (separate from server.worker_threads)
+  // Idle keep-alive connections kept per backend (host:port); 0 disables connection reuse.
+  unsigned max_idle_connections{32};
+  // An idle pooled connection older than this is closed instead of being reused.
+  std::chrono::milliseconds idle_timeout{30000};
+  // A backend response larger than this (body bytes) is refused with 502.
+  std::size_t max_response_bytes{16 * 1024 * 1024};
+};
+
 struct ShutdownConfig {
   std::chrono::seconds grace_period{5};
 };
@@ -87,6 +107,7 @@ struct Config {
   DatabaseConfig database;
   HealthCheckConfig health_check;
   RoutingConfig routing;
+  ProxyConfig proxy;
   ShutdownConfig shutdown;
 };
 

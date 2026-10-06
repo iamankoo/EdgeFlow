@@ -4,9 +4,9 @@ EdgeFlow is a high-performance **API Gateway, Service Discovery system, and Load
 
 ## Current Status
 
-**Phases 1 to 5 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that discovers registered backend instances (Phase 3) and an **active health checker** that excludes unhealthy instances from the routable view and reintroduces recovered ones (Phase 4), and **four load-balancing strategies** that choose among the routable instances (Phase 5).
+**Phases 1 to 6 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that discovers registered backend instances (Phase 3) and an **active health checker** that excludes unhealthy instances from the routable view and reintroduces recovered ones (Phase 4), and **four load-balancing strategies** that choose among the routable instances (Phase 5). Phase 6 turns it into a **reverse proxy**: `/proxy/{service}/...` is forwarded to a healthy instance chosen by the routing strategy, and the response is returned to the client.
 
-It is **not yet a gateway**: it answers requests locally and manages the registry, but it does not forward traffic. It does not yet forward requests to the instance it selects (reverse proxying is Phase 6), and has no caching or rate limiting; those arrive in Phases 6-10. See [Phases.md](Phases.md).
+It is **not yet a complete gateway**: a failed backend request is not retried, there is no circuit breaker or failover (Phase 7), no caching or rate limiting (Phase 8), no metrics (Phase 9), and no performance has been measured. See [Phases.md](Phases.md).
 
 ## Implemented
 
@@ -43,11 +43,18 @@ It is **not yet a gateway**: it answers requests locally and manages the registr
 **Phase 5 - load balancing**
 - One `LoadBalancer` abstraction, four strategies: Round Robin, Least Connections, Weighted Routing, Consistent Hashing
 - Strategies choose only among the routable (active AND healthy) instances supplied by discovery; none contains health logic
-- `routing.strategy` selects the strategy; `GET /services/{service}/route[?key=K]` shows the decision (nothing is forwarded yet)
+- `routing.strategy` selects the strategy; `GET /services/{service}/route[?key=K]` shows the decision (a diagnostic: it forwards nothing)
+
+**Phase 6 - reverse proxy and request forwarding**
+- `/proxy/{service}/...` forwards method, path (prefix stripped), query, headers and body to an instance chosen by the Phase 5 router from the routable (active AND healthy) set, and returns the backend's status, headers and body
+- Header propagation: hop-by-hop headers removed, `Host` rewritten, `X-Forwarded-For` / `X-Forwarded-Proto` / `Via` added, `X-Request-Id` preserved or generated and returned
+- Upstream keep-alive connection reuse through a per-backend pool (idle cap, idle TTL, liveness check before reuse, stale pooled connections replaced before any byte is sent)
+- Connect and whole-exchange upstream timeouts (`504`), backend failures (`502`), nothing routable (`503`); a backend's own 4xx/5xx is forwarded, not turned into a gateway error
+- `connection_count` maintained for the duration of each proxied request, so Least Connections now sees real load
+- Asynchronous: a slow backend never blocks a client-side I/O worker; graceful shutdown completes or cancels in-flight proxied requests and releases their counts
 
 ## Planned Capabilities (not yet implemented)
 
-- Reverse proxy with connection pooling and request IDs
 - Retries with exponential backoff, circuit breaker, failover
 - Redis response caching and Token Bucket rate limiting
 - Prometheus-compatible metrics
@@ -61,7 +68,7 @@ See [architecture.md](architecture.md) for the target architecture and the Phase
 cmake/                     CMake modules (dependencies, warnings)
 config/config.yaml         Default configuration (every key documented)
 db/migrations/             PostgreSQL schema (SQL), embedded into the binary at build time
-include/edgeflow/          Public headers: config, core, discovery, logging, network, storage
+include/edgeflow/          Public headers: config, core, discovery, logging, network, proxy, routing, storage
 src/                       Implementation and main.cpp
 tests/                     GoogleTest suites (unit + real-socket integration) and fixtures
 Dockerfile, docker-compose.yml, CMakePresets.json
@@ -145,11 +152,18 @@ The service registry is off by default, so this runs without a database. To use 
 | `health_check.refresh_interval_ms` | `5000` | 100-3600000 | how often the registry is re-read for new, removed and disabled instances |
 | `health_check.max_concurrent_checks` | `32` | 1-1024 | probes running at the same time |
 | `routing.strategy` | `round_robin` | `round_robin`, `least_connections`, `weighted`, `consistent_hashing` | how an instance is chosen among the routable ones |
+| `proxy.enabled` | `false` | true/false | turn the reverse proxy on; requires `database.enabled` |
+| `proxy.connect_timeout_ms` | `2000` | 10-60000 | time to resolve and connect to a backend (`504`) |
+| `proxy.upstream_timeout_ms` | `30000` | 10-600000 | time for the whole upstream exchange: connect, request, complete response (`504`); not below `connect_timeout_ms` |
+| `proxy.io_threads` | `2` | 1-64 | threads running upstream I/O (separate from `server.worker_threads`) |
+| `proxy.max_idle_connections` | `32` | 0-1024 | idle keep-alive connections kept per backend; 0 disables connection reuse |
+| `proxy.idle_timeout_ms` | `30000` | 10-3600000 | an idle pooled connection older than this is closed instead of reused |
+| `proxy.max_response_bytes` | `16777216` | 1024-268435456 | a larger backend response body is refused with `502` |
 | `shutdown.grace_period_seconds` | `5` | 0-300 | time in-flight requests get to finish on shutdown |
 
 ## Service Registry (Phase 3)
 
-EdgeFlow keeps a registry of backend service instances. **PostgreSQL is the persistent source of truth**: registrations survive restarts of EdgeFlow and of the database container (the Compose stack stores them in a named volume). The registry is managed through a small JSON API; EdgeFlow does **not** forward client traffic to registered instances yet (that is the reverse proxy, Phase 6).
+EdgeFlow keeps a registry of backend service instances. **PostgreSQL is the persistent source of truth**: registrations survive restarts of EdgeFlow and of the database container (the Compose stack stores them in a named volume). The registry is managed through a small JSON API; Client traffic is forwarded to registered instances by the reverse proxy (Phase 6, below).
 
 Enable it with `database.enabled: true` (see Configuration). The easiest way is Docker Compose, which starts PostgreSQL, applies the schema, and starts EdgeFlow with the registry on:
 
@@ -186,7 +200,7 @@ curl http://127.0.0.1:8080/services                                   # known se
 
 Errors are JSON (`{"error","status","detail"}`): `400` invalid input, `404` unknown service or instance, `405` wrong method (with `Allow`), `409` duplicate, `503` database unavailable.
 
-Instance metadata: `status` is the registration state (`active`, `draining`, `disabled`); `health_status` is the last known health (`unknown`, `healthy`, `unhealthy`). They are separate things. In Phase 3 nothing probes instances, so health is whatever was registered or last written; active health checking is Phase 4. `weight` and `connection_count` are stored for the load balancer (Phase 5) and proxy (Phase 6) and are not acted on yet. Registering an id or `host:port` that already exists for the service is rejected with `409` rather than overwriting it. Design details, schema and failure behavior: [architecture.md](architecture.md) section 19.
+Instance metadata: `status` is the registration state (`active`, `draining`, `disabled`); `health_status` is the last known health (`unknown`, `healthy`, `unhealthy`). They are separate things. In Phase 3 nothing probes instances, so health is whatever was registered or last written; active health checking is Phase 4. `weight` is used by weighted routing (Phase 5); `connection_count` is maintained by the proxy for each request in flight (Phase 6) and read by Least Connections. Registering an id or `host:port` that already exists for the service is rejected with `409` rather than overwriting it. Design details, schema and failure behavior: [architecture.md](architecture.md) section 19.
 
 ## Health Checking (Phase 4)
 
@@ -209,7 +223,7 @@ To try it locally with Docker, use two EdgeFlow containers as throwaway backends
 ```bash
 docker compose up -d --build
 for n in a b; do
-  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase5
+  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase6
   curl -X POST http://127.0.0.1:8080/services/shop/instances -H 'Content-Type: application/json'     -d "{\"instance_id\":\"$n\",\"host\":\"backend-$n\",\"port\":8080}"
 done
 curl http://127.0.0.1:8080/services/shop/routable      # within a few seconds: a and b
@@ -225,7 +239,7 @@ Set `routing.strategy` and EdgeFlow picks among the **routable** instances (`act
 | Strategy | Behaviour |
 |----------|-----------|
 | `round_robin` | `a, b, c, a, ...` in `(service, instance_id)` order; correct when instances come and go between requests |
-| `least_connections` | the instance with the smallest `connection_count` (ties: smallest id). Phase 5 only reads the count; a proxy that maintains it is Phase 6 |
+| `least_connections` | the instance with the smallest `connection_count` (ties: smallest id). The proxy keeps the count equal to the proxied requests in flight (Phase 6); the strategy only reads it |
 | `weighted` | exactly `weight` of every `sum(weights)` requests per instance, smoothly interleaved (weights 5/3/2 give `a b c a a b a c b a`); weight 0 gets no share unless all are 0 |
 | `consistent_hashing` | a request `key` maps to a stable instance; adding or removing an instance moves only the keys that must move (virtual-node ring) |
 
@@ -234,7 +248,37 @@ curl 'http://127.0.0.1:8080/services/shop/route'                 # round robin /
 curl 'http://127.0.0.1:8080/services/shop/route?key=client-42'   # consistent hashing: same key, same instance
 ```
 
-This reports the decision; it does not forward the request (Phase 6). To compare strategies locally, start the Compose stack with two or three backends as in Health Checking, change `strategy:` in `config/config.compose.yaml` and recreate the `edgeflow` container.
+This reports the decision; it does not forward the request (that is `/proxy/...`, below). To compare strategies locally, start the Compose stack with two or three backends as in Health Checking, change `strategy:` in `config/config.compose.yaml` and recreate the `edgeflow` container.
+
+## Reverse Proxy (Phase 6)
+
+With `proxy.enabled: true` (needs `database.enabled`; `docker compose` enables it) a request to `/proxy/{service}/...` is forwarded to a healthy instance of `{service}`: **Client -> EdgeFlow -> backend -> EdgeFlow -> Client**.
+
+```bash
+curl -i http://127.0.0.1:8080/proxy/shop/api/items?id=42     # backend receives GET /api/items?id=42
+curl -i -X POST http://127.0.0.1:8080/proxy/shop/orders -H 'X-Request-Id: my-id' -d '{"sku":1}'
+```
+
+- **Mapping:** `/proxy/orders/` -> `/`, `/proxy/orders/api/users?id=42` -> `/api/users?id=42`. The prefix is stripped; path and query are forwarded verbatim. `/proxy` and `/proxy/`, or an invalid service name, are `400`; an unknown service is `404`. `/`, `/health`, `/echo` and `/services/...` are unchanged (`GET /services/{service}/route` still only reports a decision).
+- **Routing:** the instance comes from the configured strategy over the routable (active AND healthy) instances; unhealthy, draining and disabled instances are never used. Consistent hashing is keyed by the client address.
+- **Headers:** hop-by-hop headers (`Connection`, `Keep-Alive`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`, `Proxy-*`, anything named by `Connection`) are not forwarded either way; `Host` is rewritten to the instance; `X-Forwarded-For` extends the client's chain; `X-Forwarded-Proto: http`; `Via: 1.1 edgeflow` is appended to requests and responses.
+- **Request ids:** `X-Request-Id` is preserved when the client sends one (1-128 visible ASCII characters), otherwise a UUID is generated; it reaches the backend, comes back to the client (also on gateway errors) and appears in the logs.
+- **Connection reuse:** keep-alive connections to backends are pooled per backend and reused when safe (the backend allowed keep-alive, the response was complete and nothing was left unread). A pooled connection that died while idle is detected before the request is written and replaced by a new one (never after a request byte was sent).
+- **Failures:** a backend's own status (including 4xx/5xx) is forwarded as is. `502` backend unreachable, reset, closed early, invalid response or response over `max_response_bytes`; `504` connect or whole-exchange timeout; `503` nothing routable, registry unavailable or shutting down. The client's connection stays open after a backend failure.
+- **Not in this phase:** no retries, backoff, circuit breaker or failover (Phase 7); no caching or rate limiting (Phase 8). Requests and responses are buffered, not streamed (bounded by `server.max_request_body_bytes` and `proxy.max_response_bytes`). Details, limitations and the threading model: [architecture.md](architecture.md) section 22.
+
+To try it locally with Docker (two throwaway backends, as in Health Checking):
+
+```bash
+docker compose up -d --build
+for n in a b; do
+  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase6
+  curl -X POST http://127.0.0.1:8080/services/shop/instances -H 'Content-Type: application/json' \
+    -d "{\"instance_id\":\"$n\",\"host\":\"backend-$n\",\"port\":8080}"
+done
+sleep 6; curl -i http://127.0.0.1:8080/proxy/shop/health    # answered by a, then b, then a ...
+docker rm -f backend-a backend-b; docker compose down -v
+```
 
 ## Testing
 
@@ -242,15 +286,17 @@ This reports the decision; it does not forward the request (Phase 6). To compare
 ctest --test-dir build --output-on-failure
 ```
 
-The suite covers configuration, logging, the shutdown coordinator, application lifecycle (including real SIGINT/SIGTERM), and the networking engine. Network tests are real integration tests: they start the server on an OS-assigned loopback port and talk to it over TCP, covering endpoints, parsing errors, limits, keep-alive and connection reuse, pipelining, idle and request timeouts, timer cancellation, client disconnects and resets, write failure, connection limits, graceful and forced shutdown, and 1/10/50/100 concurrent clients. These are correctness tests, not benchmarks.
+The suite covers configuration, logging, the shutdown coordinator, application lifecycle (including real SIGINT/SIGTERM), the networking engine and the reverse proxy. Network tests are real integration tests: they start the server on an OS-assigned loopback port and talk to it over TCP, covering endpoints, parsing errors, limits, keep-alive and connection reuse, pipelining, idle and request timeouts, timer cancellation, client disconnects and resets, write failure, connection limits, graceful and forced shutdown, and 1/10/50/100 concurrent clients. These are correctness tests, not benchmarks.
 
-The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 49 tests that need a database are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
+The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 55 tests that need a database are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
+
+At the end of Phase 6 the suite has 507 tests: 507 pass with PostgreSQL, and 452 pass with 55 skipped without it (GCC Debug/Release and Clang Debug, all `-Werror`). The Phase 6 runtime behaviour (forwarding, header propagation, connection reuse and counts, 502/503/504, shutdown with a request in flight) was also observed on real containers with Docker Compose; see `summary.md` for the exact observations. These are correctness results, not performance measurements.
 
 ## Docker
 
 ```bash
-docker build -t edgeflow:phase5 .            # builds, runs the tests, produces the runtime image
-docker run --rm -p 8080:8080 edgeflow:phase5 # HTTP server only (registry off); stop with Ctrl+C or `docker stop`
+docker build -t edgeflow:phase6 .            # builds, runs the tests, produces the runtime image
+docker run --rm -p 8080:8080 edgeflow:phase6 # HTTP server only (registry off); stop with Ctrl+C or `docker stop`
 docker compose up --build                    # PostgreSQL + EdgeFlow with the registry on; publishes ${EDGEFLOW_HTTP_PORT:-8080}
 docker compose down
 ```
@@ -274,7 +320,7 @@ No benchmarks have been run, and no performance results exist yet. Load-testing 
 | 3 | Service Discovery & Registry | Completed |
 | 4 | Health Checking & Dynamic Discovery | Completed |
 | 5 | Load Balancing Engine | Completed |
-| 6 | Reverse Proxy & Request Forwarding | Not started |
+| 6 | Reverse Proxy & Request Forwarding | Completed |
 | 7 | Reliability Engineering | Not started |
 | 8 | Redis Cache & Distributed Rate Limiting | Not started |
 | 9 | Observability, Testing & Performance | Not started |

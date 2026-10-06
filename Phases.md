@@ -1,6 +1,6 @@
 # EdgeFlow — Development Phases
 
-**Current Phase: Phase 5 completed — awaiting Phase 6 requirements**
+**Current Phase: Phase 6 completed — awaiting Phase 7 requirements**
 
 This document is the authoritative roadmap. Phases must not be skipped. A phase begins only after the previous phase has met its exit condition. Later-phase functionality must not be implemented early unless strictly required as a dependency and clearly documented.
 
@@ -13,7 +13,7 @@ Before implementing a phase, its detailed implementation prompt must be cross-ch
 | 3 | Service Discovery & Registry | Completed |
 | 4 | Health Checking & Dynamic Discovery | Completed |
 | 5 | Load Balancing Engine | Completed |
-| 6 | Reverse Proxy & Request Forwarding | Not started |
+| 6 | Reverse Proxy & Request Forwarding | Completed |
 | 7 | Reliability Engineering | Not started |
 | 8 | Redis Cache & Distributed Rate Limiting | Not started |
 | 9 | Observability, Testing & Performance | Not started |
@@ -138,6 +138,8 @@ Build:
 - backend failure handling
 
 **Exit condition:** Client → EdgeFlow → Backend → EdgeFlow → Client works reliably.
+
+**Completion summary:** Met. `/proxy/{service}/...` is routed through the Phase 5 `Router` to a healthy instance (prefix stripped, query kept) by an asynchronous proxy (new `RequestHandler::handleAsync` boundary, its own upstream I/O threads, a per-backend keep-alive connection pool, a safeguard for stale pooled connections, connect and whole-exchange timeouts). Request and response bodies, status codes and headers are forwarded (hop-by-hop headers removed, `Via`/`X-Forwarded-*` added, `X-Request-Id` kept or generated); failures map to 502 (refused, reset, invalid or incomplete response), 503 (no healthy instance) and 504 (timeout), and `connection_count` is maintained around each request. Verified with real containers in Docker Compose (PostgreSQL, health checker, several Python backend containers): forwarding of GET/POST/PUT/DELETE/HEAD with query and body, header propagation, round robin over the healthy backends only, 40 sequential requests over one upstream connection, `connection_count` 1 and 3 during slow requests and 0 afterwards, backend status codes forwarded unchanged, 502 for a closed connection, reset, garbage and refused port, 504 at the 5 s upstream timeout, 503 with no healthy backend, a backend restart between requests answered 200 on a new connection, and `docker stop` with a request in flight let it finish (200) and exited 0. 507 tests pass with GCC 13 (Debug and Release) and Clang 18 (`-Werror`) against PostgreSQL (55 are skipped when no database is available); the proxy suites passed 12 repeated runs, ThreadSanitizer reported no warnings and AddressSanitizer+UBSan reported no errors on the 124 proxy-related tests. No retries, circuit breaker, failover, caching or TLS (Phase 7 and later). A hard kill (SIGKILL) cannot release in-flight `connection_count` values. The remote GitHub Actions run has not been confirmed. No performance figures were measured. See `summary.md`.
 
 ---
 
