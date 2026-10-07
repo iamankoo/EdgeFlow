@@ -1,5 +1,6 @@
 #include "edgeflow/proxy/UpstreamClient.hpp"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -335,8 +336,14 @@ UpstreamClient::UpstreamClient(net::io_context& io, std::shared_ptr<UpstreamPool
       logger_(std::move(logger)) {}
 
 std::shared_ptr<UpstreamCall> UpstreamClient::send(UpstreamEndpoint endpoint,
-                                                   network::HttpRequest request, Callback done) {
-  auto exchange = std::make_shared<Exchange>(io_, pool_, names_, settings_, logger_,
+                                                   network::HttpRequest request, Callback done,
+                                                   std::optional<std::chrono::milliseconds> deadline_cap) {
+  UpstreamSettings settings = settings_;
+  if (deadline_cap && *deadline_cap < settings.upstream_timeout) {
+    settings.upstream_timeout = std::max(*deadline_cap, std::chrono::milliseconds{1});
+    settings.connect_timeout = std::min(settings.connect_timeout, settings.upstream_timeout);
+  }
+  auto exchange = std::make_shared<Exchange>(io_, pool_, names_, settings, logger_,
                                              std::move(endpoint), std::move(request),
                                              std::move(done));
   exchange->start();

@@ -4,9 +4,9 @@ EdgeFlow is a high-performance **API Gateway, Service Discovery system, and Load
 
 ## Current Status
 
-**Phases 1 to 6 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that discovers registered backend instances (Phase 3) and an **active health checker** that excludes unhealthy instances from the routable view and reintroduces recovered ones (Phase 4), and **four load-balancing strategies** that choose among the routable instances (Phase 5). Phase 6 turns it into a **reverse proxy**: `/proxy/{service}/...` is forwarded to a healthy instance chosen by the routing strategy, and the response is returned to the client.
+**Phases 1 to 7 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that discovers registered backend instances (Phase 3) and an **active health checker** that excludes unhealthy instances from the routable view and reintroduces recovered ones (Phase 4), and **four load-balancing strategies** that choose among the routable instances (Phase 5). Phase 6 turns it into a **reverse proxy**: `/proxy/{service}/...` is forwarded to a healthy instance chosen by the routing strategy, and the response is returned to the client. Phase 7 makes that forwarding **reliable**: retries with exponential backoff, a circuit breaker per backend instance, failover to another instance, a total request budget and graceful degradation.
 
-It is **not yet a complete gateway**: a failed backend request is not retried, there is no circuit breaker or failover (Phase 7), no caching or rate limiting (Phase 8), no metrics (Phase 9), and no performance has been measured. See [Phases.md](Phases.md).
+It is **not yet a complete gateway**: there is no caching or rate limiting (Phase 8), no metrics (Phase 9), and no performance has been measured. See [Phases.md](Phases.md).
 
 ## Implemented
 
@@ -53,9 +53,14 @@ It is **not yet a complete gateway**: a failed backend request is not retried, t
 - `connection_count` maintained for the duration of each proxied request, so Least Connections now sees real load
 - Asynchronous: a slow backend never blocks a client-side I/O worker; graceful shutdown completes or cancels in-flight proxied requests and releases their counts
 
+**Phase 7 - reliability engineering** (`reliability.*`, see [Reliability](#reliability-phase-7))
+- Total request budget and per-attempt timeouts; retry policy with a limit on attempts, exponential backoff with jitter, retryable statuses and retryable methods
+- Circuit breaker per backend instance (CLOSED -> OPEN -> HALF-OPEN -> CLOSED) that stops sending traffic to an instance whose real requests keep failing
+- Failover: a retry prefers a backend the request has not tried; backends with an open circuit are skipped
+- Graceful degradation: with nothing eligible the client gets a fast `503` (or the last backend answer); the gateway stays up
+
 ## Planned Capabilities (not yet implemented)
 
-- Retries with exponential backoff, circuit breaker, failover
 - Redis response caching and Token Bucket rate limiting
 - Prometheus-compatible metrics
 
@@ -159,6 +164,19 @@ The service registry is off by default, so this runs without a database. To use 
 | `proxy.max_idle_connections` | `32` | 0-1024 | idle keep-alive connections kept per backend; 0 disables connection reuse |
 | `proxy.idle_timeout_ms` | `30000` | 10-3600000 | an idle pooled connection older than this is closed instead of reused |
 | `proxy.max_response_bytes` | `16777216` | 1024-268435456 | a larger backend response body is refused with `502` |
+| `reliability.enabled` | `false` | true/false | turn the reliability layer on; requires `proxy.enabled` |
+| `reliability.timeout.total_timeout_ms` | `30000` | 10-3600000 | bound for the WHOLE proxied request, every attempt and backoff pause included; one attempt gets at most `min(proxy.upstream_timeout_ms, what is left)` |
+| `reliability.retry.enabled` | `true` | true/false | retry failed attempts |
+| `reliability.retry.max_attempts` | `3` | 1-10 | TOTAL attempts including the first (1 = never retry) |
+| `reliability.retry.base_delay_ms` | `100` | 1-60000 | pause before the first retry; doubles for each further one |
+| `reliability.retry.max_delay_ms` | `2000` | 1-600000 | cap of the pause; not below `base_delay_ms` |
+| `reliability.retry.jitter_percent` | `20` | 0-100 | each pause is shortened by up to this percent at random |
+| `reliability.retry.retryable_statuses` | `[502, 503, 504]` | each 400-599 | a backend answer with one of these statuses counts as a failed attempt; any other status is forwarded |
+| `reliability.retry.retryable_methods` | `[GET, HEAD, OPTIONS]` | HTTP methods | methods retried after the backend MAY have processed the request (timeout, reset, retryable status); a request that never reached a backend is retried whatever its method |
+| `reliability.circuit_breaker.enabled` | `true` | true/false | one circuit per backend instance |
+| `reliability.circuit_breaker.failure_threshold` | `5` | 1-1000 | consecutive failed requests that open the circuit |
+| `reliability.circuit_breaker.recovery_timeout_ms` | `30000` | 10-3600000 | time open before probe request(s) are let through |
+| `reliability.circuit_breaker.half_open_max_requests` | `1` | 1-100 | probes allowed in flight; that many successes close the circuit |
 | `shutdown.grace_period_seconds` | `5` | 0-300 | time in-flight requests get to finish on shutdown |
 
 ## Service Registry (Phase 3)
@@ -223,7 +241,7 @@ To try it locally with Docker, use two EdgeFlow containers as throwaway backends
 ```bash
 docker compose up -d --build
 for n in a b; do
-  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase6
+  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase7
   curl -X POST http://127.0.0.1:8080/services/shop/instances -H 'Content-Type: application/json'     -d "{\"instance_id\":\"$n\",\"host\":\"backend-$n\",\"port\":8080}"
 done
 curl http://127.0.0.1:8080/services/shop/routable      # within a few seconds: a and b
@@ -265,19 +283,39 @@ curl -i -X POST http://127.0.0.1:8080/proxy/shop/orders -H 'X-Request-Id: my-id'
 - **Request ids:** `X-Request-Id` is preserved when the client sends one (1-128 visible ASCII characters), otherwise a UUID is generated; it reaches the backend, comes back to the client (also on gateway errors) and appears in the logs.
 - **Connection reuse:** keep-alive connections to backends are pooled per backend and reused when safe (the backend allowed keep-alive, the response was complete and nothing was left unread). A pooled connection that died while idle is detected before the request is written and replaced by a new one (never after a request byte was sent).
 - **Failures:** a backend's own status (including 4xx/5xx) is forwarded as is. `502` backend unreachable, reset, closed early, invalid response or response over `max_response_bytes`; `504` connect or whole-exchange timeout; `503` nothing routable, registry unavailable or shutting down. The client's connection stays open after a backend failure.
-- **Not in this phase:** no retries, backoff, circuit breaker or failover (Phase 7); no caching or rate limiting (Phase 8). Requests and responses are buffered, not streamed (bounded by `server.max_request_body_bytes` and `proxy.max_response_bytes`). Details, limitations and the threading model: [architecture.md](architecture.md) section 22.
+- **Not in this phase:** retries, backoff, circuit breaker and failover are Phase 7 (below); no caching or rate limiting (Phase 8). Requests and responses are buffered, not streamed (bounded by `server.max_request_body_bytes` and `proxy.max_response_bytes`). Details, limitations and the threading model: [architecture.md](architecture.md) section 22.
 
 To try it locally with Docker (two throwaway backends, as in Health Checking):
 
 ```bash
 docker compose up -d --build
 for n in a b; do
-  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase6
+  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase7
   curl -X POST http://127.0.0.1:8080/services/shop/instances -H 'Content-Type: application/json' \
     -d "{\"instance_id\":\"$n\",\"host\":\"backend-$n\",\"port\":8080}"
 done
 sleep 6; curl -i http://127.0.0.1:8080/proxy/shop/health    # answered by a, then b, then a ...
 docker rm -f backend-a backend-b; docker compose down -v
+```
+
+## Reliability (Phase 7)
+
+With `reliability.enabled: true` (needs `proxy.enabled`; `docker compose` enables it) every `/proxy/{service}/...` request runs under a policy that keeps a failing backend from becoming a failing gateway.
+
+- **Attempts and classification:** an attempt fails when the backend answers with a `retryable_statuses` code, times out, resets or closes without a complete answer, or cannot be reached. Any other backend status (including `404`, `500`) is the application's answer and is forwarded unchanged.
+- **Retry rules:** at most `max_attempts` attempts in total. A request that provably never reached a backend (connection refused, name not resolved, connect timeout) is retried whatever its method; after the backend may have processed it (timeout, reset, retryable status) only `retryable_methods` are retried, so a `POST` is not repeated by default.
+- **Backoff:** the pause before retry *n* is `base_delay_ms * 2^(n-1)`, capped at `max_delay_ms`, shortened by up to `jitter_percent`. A pause that does not fit in the remaining budget is skipped and the last answer is returned.
+- **Total budget:** `reliability.timeout.total_timeout_ms` bounds the whole request; each attempt gets at most the smaller of `proxy.upstream_timeout_ms` and what is left.
+- **Circuit breaker (per backend instance):** `CLOSED` -> after `failure_threshold` consecutive failed requests `OPEN` (no traffic) -> after `recovery_timeout_ms` `HALF-OPEN` (up to `half_open_max_requests` probe requests) -> enough successes `CLOSED`; a failed probe re-opens it. A request records at most one failure per backend, so one request cannot open a circuit alone. The breaker is the fast, passive view of real traffic; the Phase 4 health checker is the slow, active view that decides the routable set. They share no state: a backend is used only if it is routable AND its circuit admits a request.
+- **Failover:** a retry prefers a backend the request has not tried yet; backends whose circuit refuses are skipped by the router. With a single instance, retries go back to that instance until its circuit opens.
+- **Graceful degradation:** when no instance is eligible the client gets `503` at once (about 1 ms in the Compose run) instead of waiting; the last backend answer is returned when retries are exhausted; `/health`, the registry API and other services are unaffected.
+- **Not included:** circuit state is in memory and per EdgeFlow process (not shared, lost on restart); retried requests are buffered; no metrics (Phase 9); no cache or rate limiting (Phase 8). Design details and limitations: [architecture.md](architecture.md) section 23.
+
+```bash
+docker compose up -d --build        # the Compose config enables reliability with short delays
+# with two backends a and b registered for service "shop": make a answer 503 (keep its /health at 200)
+for i in $(seq 8); do curl -s -o /dev/null -w '%{http_code} ' http://127.0.0.1:8080/proxy/shop/x; done   # all 200, served by b
+docker logs edgeflow | grep -E 'retrying|circuit breaker'
 ```
 
 ## Testing
@@ -288,15 +326,15 @@ ctest --test-dir build --output-on-failure
 
 The suite covers configuration, logging, the shutdown coordinator, application lifecycle (including real SIGINT/SIGTERM), the networking engine and the reverse proxy. Network tests are real integration tests: they start the server on an OS-assigned loopback port and talk to it over TCP, covering endpoints, parsing errors, limits, keep-alive and connection reuse, pipelining, idle and request timeouts, timer cancellation, client disconnects and resets, write failure, connection limits, graceful and forced shutdown, and 1/10/50/100 concurrent clients. These are correctness tests, not benchmarks.
 
-The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 55 tests that need a database are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
+The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 58 tests that need a database are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
 
-At the end of Phase 6 the suite has 507 tests: 507 pass with PostgreSQL, and 452 pass with 55 skipped without it (GCC Debug/Release and Clang Debug, all `-Werror`). The Phase 6 runtime behaviour (forwarding, header propagation, connection reuse and counts, 502/503/504, shutdown with a request in flight) was also observed on real containers with Docker Compose; see `summary.md` for the exact observations. These are correctness results, not performance measurements.
+At the end of Phase 7 the suite has 630 tests: 630 pass with PostgreSQL (GCC Debug/Release and Clang Debug, all `-Werror`), and 572 pass with 58 skipped without it (the Docker image build). The 330 reliability, proxy, pool, async, server, application and router tests passed 10 repeated runs; AddressSanitizer+UBSan and ThreadSanitizer reported nothing on them. The Phase 6 and Phase 7 runtime behaviour (forwarding, retries, backoff, failover, circuit open/half-open/closed, total budget, degradation, shutdown) was observed on real containers with Docker Compose; see `summary.md` for the exact observations. These are correctness results, not performance measurements.
 
 ## Docker
 
 ```bash
-docker build -t edgeflow:phase6 .            # builds, runs the tests, produces the runtime image
-docker run --rm -p 8080:8080 edgeflow:phase6 # HTTP server only (registry off); stop with Ctrl+C or `docker stop`
+docker build -t edgeflow:phase7 .            # builds, runs the tests, produces the runtime image
+docker run --rm -p 8080:8080 edgeflow:phase7 # HTTP server only (registry off); stop with Ctrl+C or `docker stop`
 docker compose up --build                    # PostgreSQL + EdgeFlow with the registry on; publishes ${EDGEFLOW_HTTP_PORT:-8080}
 docker compose down
 ```
@@ -321,7 +359,7 @@ No benchmarks have been run, and no performance results exist yet. Load-testing 
 | 4 | Health Checking & Dynamic Discovery | Completed |
 | 5 | Load Balancing Engine | Completed |
 | 6 | Reverse Proxy & Request Forwarding | Completed |
-| 7 | Reliability Engineering | Not started |
+| 7 | Reliability Engineering | Completed |
 | 8 | Redis Cache & Distributed Rate Limiting | Not started |
 | 9 | Observability, Testing & Performance | Not started |
 | 10 | Optimization, Production Hardening & Release | Not started |

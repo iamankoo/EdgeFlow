@@ -569,4 +569,54 @@ The proxy is registered with the shutdown coordinator before the health checker 
 - `X-Forwarded-For` extends whatever chain the client sent (there is no trusted-proxy list); `X-Forwarded-Proto` is always `http`.
 - Consistent hashing is keyed by the client address, not by a configurable header.
 - The routable set is read from PostgreSQL for every request and each proxied request adds two counter writes; one strategy applies to all services; the lookup queue is FIFO and shared by routing and release.
-- No retry, backoff, circuit breaker, failover or graceful degradation (Phase 7), no cache or rate limiting (Phase 8), no metrics (Phase 9). No performance figure has been measured.
+- Retry, backoff, circuit breaker, failover and graceful degradation arrived in Phase 7 (section 23); no cache or rate limiting (Phase 8), no metrics (Phase 9). No performance figure has been measured.
+
+
+## 23. Phase 7 Implementation: Reliability Engineering
+
+### Implemented in Phase 7
+
+```text
+include/edgeflow/reliability/   ReliabilityManager  RetryPolicy / BackoffPolicy (Retry.hpp)
+                                CircuitBreaker / CircuitBreakerRegistry  Failover.hpp (AttemptLedger, backendKey)
+src/reliability/                matching implementations
+include/edgeflow/config/Config.hpp   ReliabilityConfig (timeout, retry, circuit_breaker)
+src/proxy/ProxyHandler.cpp      the attempt loop: classify, settle breaker, decide, back off, retry
+include/edgeflow/routing/Router.hpp  route(...) accepts a candidate filter (failover / open circuits)
+```
+
+```text
+Client -> ProxyHandler (one Operation per request, total budget starts)
+   attempt n:  Router.route(service, filter = not-yet-tried first, circuit admits)
+               -> UpstreamClient (timeout = min(proxy.upstream_timeout_ms, budget left))
+               -> classify: Success | RetryableStatus | NotSent | MaybeProcessed | Permanent | Cancelled
+               -> settle the instance's circuit (success / one failure per request per backend / release)
+               -> release connection_count (still BEFORE anything is handed back)
+               -> RetryPolicy.decide(kind, method, attempts) -> backoffDelay(n) fits the budget? -> next attempt
+   done:       the last answer is returned (or a 503/504 when no attempt could be made)
+```
+
+### Design decisions
+
+- **The reliability layer performs no I/O.** `ReliabilityManager`, `RetryPolicy`, `BackoffPolicy` and `CircuitBreaker` are pure state and decisions with an injectable clock and random source; the proxy classifies what happened on the wire and acts on the decisions. This keeps every rule unit-testable without sockets or sleeps.
+- **Retry safety rule.** After a failure the request is retried only if (a) attempts remain (`max_attempts` counts all attempts, 1-10, no code path bypasses it), and (b) either the request provably never reached a backend (`NotSent`: not resolved, refused, unreachable, connect timeout) whatever its method, or the method is in `retryable_methods` (`MaybeProcessed` and `RetryableStatus`). `Permanent` failures (response too large, internal) and cancellation are never retried. The Phase 6 stale-pooled-connection safeguard is unchanged and happens inside one attempt, so it is never counted as a retry.
+- **Backoff:** `min(max_delay, base_delay * 2^(n-1))` reduced by up to `jitter_percent` percent (never above the nominal delay), overflow-safe. The pause is a timer on the operation's strand: no thread blocks, and cancelling the request cancels the pause. If the delay does not fit in the remaining total budget no further attempt is made and the last answer is returned.
+- **Total budget** (`reliability.timeout.total_timeout_ms`): bounds every attempt and pause; each attempt's upstream timeout is the smaller of `proxy.upstream_timeout_ms` and what is left.
+- **Circuit breaker per backend instance**, keyed `service/instance_id@host:port` (a re-registered instance on another endpoint starts clean). Pure state machine: CLOSED -> OPEN after `failure_threshold` consecutive failed requests; OPEN rejects at once; after `recovery_timeout_ms` the next admission request moves it to HALF-OPEN and admits up to `half_open_max_requests` probes (the bounded batch, not the waiting crowd); that many successes close it, any failed probe re-opens it with a new recovery period. Tickets carry a state epoch, so a late result from before a transition cannot reopen or close a circuit that already decided something newer. A request records at most one failure per backend (`AttemptLedger`), so one request that fails three times on one backend cannot open its circuit alone. A cancelled request releases its slot without counting.
+- **Failover:** each request keeps an `AttemptLedger`; the router filter excludes backends whose circuit would refuse and prefers backends not yet tried; if only tried backends remain they are used again. `Router::route` still returns one instance chosen by the configured strategy: failover is a filter, not a new strategy.
+- **Circuit breaker versus health checker:** the health checker (Phase 4) is the slow active view and alone decides the routable set in PostgreSQL; the breaker is the fast passive view of real traffic and only withholds traffic temporarily. They share no state. A backend is used only if it is routable AND its circuit admits a request.
+- **Graceful degradation:** with no eligible instance the client gets `503` at once; after a failed attempt with no backend left the client gets what that attempt produced; the gateway, `/health`, the registry API and other services are unaffected. `reliability.enabled: false` leaves the Phase 6 behaviour exactly (one attempt).
+- **Logging:** `attempt N of M failed (<kind>); retrying in Xms` (info), `circuit breaker <key>: <from> -> <to>` (warning when opening, info otherwise), `no time budget left ...`, `no backend left for another attempt` (warning). Counters (attempts, retries, failovers, circuit rejections, circuits opened, exhausted) are kept in `ReliabilityManager::Stats` but not exported anywhere: metrics are Phase 9.
+
+### Configuration `reliability.*` (strict; default off; requires `proxy.enabled`)
+
+See the README table. `config/config.yaml` ships it off; `config/config.compose.yaml` enables it with short delays (total budget 12 s, 3 attempts, backoff 100-2000 ms, circuit 3 failures / 6 s recovery / 1 probe). The Compose image tag is `edgeflow:phase7`.
+
+### Limitations
+
+- Circuit state is in memory, per EdgeFlow process: not shared between processes, lost on restart.
+- Retried requests are buffered (as in Phase 6); there is no streaming and no hedged/parallel attempts.
+- The routable set is still read from PostgreSQL on every attempt (no routing cache); a retry costs another routing round trip.
+- `connection_count` is not reconciled after a hard kill (Phase 6 limitation unchanged). A request cancelled by shutdown after the grace period gets a closed connection, not a response.
+- Retry classification is by status code, method and failure kind only: no idempotency keys, no `Retry-After` handling.
+- No metrics (Phase 9); no cache or rate limiting (Phase 8). No performance figure has been measured.

@@ -467,4 +467,130 @@ TEST(ConfigManagerProxyTest, ShippedConfigurations) {
   EXPECT_FALSE(shipped.config().proxy.enabled);
 }
 
+// ---------------------------------------------------------------------------------------
+// Phase 7: reliability
+// ---------------------------------------------------------------------------------------
+
+namespace {
+const char* const kProxyOn = "database:\n  enabled: true\nproxy:\n  enabled: true\n";
+}
+
+TEST(ConfigManagerReliabilityTest, DefaultsAreOffAndConservative) {
+  ConfigManager manager;
+  ASSERT_TRUE(manager.loadFromString("server:\n  port: 8080\n"));
+  const auto& r = manager.config().reliability;
+  EXPECT_FALSE(r.enabled) << "Phase 6 configurations keep their exact behaviour";
+  EXPECT_EQ(r.timeout.total_timeout, std::chrono::milliseconds{30000});
+  EXPECT_TRUE(r.retry.enabled);
+  EXPECT_EQ(r.retry.max_attempts, 3U);
+  EXPECT_EQ(r.retry.base_delay, std::chrono::milliseconds{100});
+  EXPECT_EQ(r.retry.max_delay, std::chrono::milliseconds{2000});
+  EXPECT_EQ(r.retry.jitter_percent, 20U);
+  EXPECT_EQ(r.retry.retryable_statuses, (std::vector<unsigned>{502, 503, 504}));
+  EXPECT_EQ(r.retry.retryable_methods, (std::vector<std::string>{"GET", "HEAD", "OPTIONS"}));
+  EXPECT_TRUE(r.circuit_breaker.enabled);
+  EXPECT_EQ(r.circuit_breaker.failure_threshold, 5U);
+  EXPECT_EQ(r.circuit_breaker.recovery_timeout, std::chrono::milliseconds{30000});
+  EXPECT_EQ(r.circuit_breaker.half_open_max_requests, 1U);
+}
+
+TEST(ConfigManagerReliabilityTest, ParsesEveryKey) {
+  ConfigManager manager;
+  ASSERT_TRUE(manager.loadFromString(std::string{kProxyOn} +
+                                     "reliability:\n"
+                                     "  enabled: true\n"
+                                     "  timeout:\n    total_timeout_ms: 9000\n"
+                                     "  retry:\n"
+                                     "    enabled: false\n    max_attempts: 5\n    base_delay_ms: 20\n"
+                                     "    max_delay_ms: 640\n    jitter_percent: 50\n"
+                                     "    retryable_statuses: [500, 429]\n"
+                                     "    retryable_methods:\n      - GET\n      - PUT\n"
+                                     "  circuit_breaker:\n    enabled: false\n    failure_threshold: 9\n"
+                                     "    recovery_timeout_ms: 1500\n    half_open_max_requests: 4\n"));
+  const auto& r = manager.config().reliability;
+  EXPECT_TRUE(r.enabled);
+  EXPECT_EQ(r.timeout.total_timeout, std::chrono::milliseconds{9000});
+  EXPECT_FALSE(r.retry.enabled);
+  EXPECT_EQ(r.retry.max_attempts, 5U);
+  EXPECT_EQ(r.retry.base_delay, std::chrono::milliseconds{20});
+  EXPECT_EQ(r.retry.max_delay, std::chrono::milliseconds{640});
+  EXPECT_EQ(r.retry.jitter_percent, 50U);
+  EXPECT_EQ(r.retry.retryable_statuses, (std::vector<unsigned>{500, 429}));
+  EXPECT_EQ(r.retry.retryable_methods, (std::vector<std::string>{"GET", "PUT"}));
+  EXPECT_FALSE(r.circuit_breaker.enabled);
+  EXPECT_EQ(r.circuit_breaker.failure_threshold, 9U);
+  EXPECT_EQ(r.circuit_breaker.recovery_timeout, std::chrono::milliseconds{1500});
+  EXPECT_EQ(r.circuit_breaker.half_open_max_requests, 4U);
+}
+
+TEST(ConfigManagerReliabilityTest, UnknownKeysAreRejectedAtEveryLevel) {
+  for (const char* bad : {"reliability:\n  retries: 3\n", "reliability:\n  timeout:\n    attempt_ms: 5\n",
+                          "reliability:\n  retry:\n    attempts: 3\n",
+                          "reliability:\n  circuit_breaker:\n    threshold: 3\n"}) {
+    ConfigManager manager;
+    EXPECT_FALSE(manager.loadFromString(bad)) << bad;
+    EXPECT_TRUE(anyErrorContains(manager, "unknown key 'reliability.")) << bad;
+  }
+}
+
+TEST(ConfigManagerReliabilityTest, InvalidValuesAreRejected) {
+  const std::vector<std::string> bad = {
+      "retry:\n    max_attempts: 0",     "retry:\n    max_attempts: 11",   "retry:\n    max_attempts: -1",
+      "retry:\n    max_attempts: many",  "retry:\n    base_delay_ms: 0",   "retry:\n    base_delay_ms: 60001",
+      "retry:\n    max_delay_ms: 0",     "retry:\n    max_delay_ms: 600001",
+      "retry:\n    jitter_percent: -1",  "retry:\n    jitter_percent: 101",
+      "retry:\n    enabled: sometimes",  "retry:\n    retryable_statuses: 503",
+      "retry:\n    retryable_statuses: [200]", "retry:\n    retryable_statuses: [399]",
+      "retry:\n    retryable_statuses: [600]", "retry:\n    retryable_statuses: [abc]",
+      "retry:\n    retryable_statuses: [503, 503]", "retry:\n    retryable_methods: [get]",
+      "retry:\n    retryable_methods: [FETCH]", "retry:\n    retryable_methods: [GET, GET]",
+      "retry:\n    retryable_methods: GET",
+      "timeout:\n    total_timeout_ms: 9", "timeout:\n    total_timeout_ms: 3600001",
+      "circuit_breaker:\n    failure_threshold: 0", "circuit_breaker:\n    failure_threshold: 1001",
+      "circuit_breaker:\n    recovery_timeout_ms: 9", "circuit_breaker:\n    recovery_timeout_ms: 3600001",
+      "circuit_breaker:\n    half_open_max_requests: 0", "circuit_breaker:\n    half_open_max_requests: 101",
+      "circuit_breaker:\n    enabled: 1"};
+  for (const auto& section : bad) {
+    ConfigManager manager;
+    EXPECT_FALSE(manager.loadFromString(std::string{kProxyOn} + "reliability:\n  enabled: true\n  " + section + "\n"))
+        << section;
+    EXPECT_TRUE(anyErrorContains(manager, "reliability.")) << section;
+  }
+  ConfigManager not_a_map;
+  EXPECT_FALSE(not_a_map.loadFromString("reliability: yes\n"));
+}
+
+TEST(ConfigManagerReliabilityTest, TheBaseDelayMayNotExceedTheMaximumDelay) {
+  ConfigManager manager;
+  EXPECT_FALSE(manager.loadFromString("reliability:\n  retry:\n    base_delay_ms: 500\n    max_delay_ms: 100\n"));
+  EXPECT_TRUE(anyErrorContains(manager, "'reliability.retry.base_delay_ms' (500) must not exceed"));
+  ConfigManager equal;
+  EXPECT_TRUE(equal.loadFromString("reliability:\n  retry:\n    base_delay_ms: 100\n    max_delay_ms: 100\n"));
+}
+
+TEST(ConfigManagerReliabilityTest, ReliabilityRequiresTheProxy) {
+  ConfigManager manager;
+  EXPECT_FALSE(manager.loadFromString("reliability:\n  enabled: true\n"));
+  EXPECT_TRUE(anyErrorContains(manager, "'reliability.enabled' requires 'proxy.enabled'"));
+  ConfigManager ok;
+  EXPECT_TRUE(ok.loadFromString(std::string{kProxyOn} + "reliability:\n  enabled: true\n"));
+  ConfigManager off;
+  EXPECT_TRUE(off.loadFromString("reliability:\n  enabled: false\n")) << "a disabled section needs no proxy";
+}
+
+TEST(ConfigManagerReliabilityTest, AnEmptyStatusListIsAllowedAndMeansNoStatusRetries) {
+  ConfigManager manager;
+  ASSERT_TRUE(manager.loadFromString("reliability:\n  retry:\n    retryable_statuses: []\n"));
+  EXPECT_TRUE(manager.config().reliability.retry.retryable_statuses.empty());
+}
+
+TEST(ConfigManagerReliabilityTest, ShippedConfigurations) {
+  ConfigManager compose;
+  ASSERT_TRUE(compose.load(std::filesystem::path{EDGEFLOW_DEFAULT_CONFIG}.parent_path() / "config.compose.yaml"));
+  EXPECT_TRUE(compose.config().reliability.enabled);
+  ConfigManager shipped;
+  ASSERT_TRUE(shipped.load(std::filesystem::path{EDGEFLOW_DEFAULT_CONFIG}));
+  EXPECT_FALSE(shipped.config().reliability.enabled);
+}
+
 }  // namespace

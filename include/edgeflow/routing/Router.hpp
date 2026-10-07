@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -28,6 +29,22 @@ class Router {
   // routable right now, DatabaseUnavailable / InvalidArgument as reported by the registry.
   [[nodiscard]] discovery::Result<discovery::ServiceInstance> route(
       std::string_view service, const RoutingContext& context = {});
+
+  // Same, but only among instances that pass the filter (failover: leave out the backends a
+  // request already failed on, and the ones whose circuit is open). The filter is applied to
+  // the one routable snapshot taken for this call, before the strategy chooses; the
+  // strategies themselves are untouched. NoRoutableInstance also covers "routable instances
+  // exist but none is eligible".
+  struct Filter {
+    // An instance for which this returns false is never chosen. Empty: all are eligible.
+    std::function<bool(const discovery::ServiceInstance&)> eligible;
+    // Among the eligible instances, those for which this returns true are chosen first;
+    // when none qualifies, any eligible instance may be chosen. Empty: no preference.
+    std::function<bool(const discovery::ServiceInstance&)> preferred;
+  };
+  [[nodiscard]] discovery::Result<discovery::ServiceInstance> route(std::string_view service,
+                                                                    const RoutingContext& context,
+                                                                    const Filter& filter);
 
   [[nodiscard]] std::string_view strategy() const noexcept { return balancer_->name(); }
 

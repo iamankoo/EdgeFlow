@@ -26,6 +26,7 @@
 #include "edgeflow/discovery/NameResolver.hpp"
 #include "edgeflow/network/RegistryRequestHandler.hpp"
 #include "edgeflow/proxy/ProxyHandler.hpp"
+#include "edgeflow/reliability/ReliabilityManager.hpp"
 #include "edgeflow/routing/Router.hpp"
 #include "support/FakeRegistry.hpp"
 #include "support/HealthTestSupport.hpp"
@@ -387,6 +388,23 @@ inline config::ProxyConfig testProxyConfig() {
   return config;
 }
 
+// Reliability settings for tests: short delays so retries and recovery take milliseconds.
+inline config::ReliabilityConfig testReliabilityConfig() {
+  config::ReliabilityConfig config;
+  config.enabled = true;
+  config.timeout.total_timeout = std::chrono::milliseconds{10000};
+  config.retry.enabled = true;
+  config.retry.max_attempts = 3;
+  config.retry.base_delay = std::chrono::milliseconds{5};
+  config.retry.max_delay = std::chrono::milliseconds{40};
+  config.retry.jitter_percent = 0;
+  config.circuit_breaker.enabled = true;
+  config.circuit_breaker.failure_threshold = 3;
+  config.circuit_breaker.recovery_timeout = std::chrono::milliseconds{300};
+  config.circuit_breaker.half_open_max_requests = 1;
+  return config;
+}
+
 // EdgeFlow's real server + registry API + reverse proxy over a FakeRegistry, with scripted
 // backends registered as instances: everything is real except the database.
 class ProxyFixture : public ::testing::Test {
@@ -402,8 +420,13 @@ class ProxyFixture : public ::testing::Test {
     router = std::make_shared<routing::Router>(registry, routing::makeLoadBalancer(strategy));
     auto local = std::make_shared<network::LocalRequestHandler>();
     auto api = std::make_shared<network::RegistryRequestHandler>(registry, local, log.logger(), router);
+    if (reliability_config.enabled) {
+      // No jitter in tests (the random source always answers 0): delays are exact.
+      reliability = std::make_shared<reliability::ReliabilityManager>(
+          reliability_config, log.logger(), nullptr, [] { return 0.0; });
+    }
     proxy = std::make_shared<proxy::ProxyHandler>(api, router, registry, proxy_config, 4, log.logger(),
-                                                  std::move(names));
+                                                  std::move(names), nullptr, reliability);
     server = std::make_unique<network::HttpServer>(std::move(server_config), log.logger(), proxy);
     ASSERT_TRUE(server->start());
   }
@@ -459,6 +482,8 @@ class ProxyFixture : public ::testing::Test {
   CapturedLogger log;
   std::shared_ptr<FlakyRegistry> registry = std::make_shared<FlakyRegistry>();
   config::ProxyConfig proxy_config = testProxyConfig();
+  config::ReliabilityConfig reliability_config;  // off unless a test switches it on
+  std::shared_ptr<reliability::ReliabilityManager> reliability;
   std::shared_ptr<routing::Router> router;
   std::shared_ptr<proxy::ProxyHandler> proxy;
   std::unique_ptr<network::HttpServer> server;

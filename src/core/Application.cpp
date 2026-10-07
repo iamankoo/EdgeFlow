@@ -131,8 +131,13 @@ bool Application::initializeRegistry(std::shared_ptr<network::RequestHandler>& h
     // server and the health checker, so (shutting down in reverse) it stops after both: the
     // server has then answered or cancelled every client, and the registry is still alive
     // while the proxy releases the connection counts of its last requests.
+    std::shared_ptr<reliability::ReliabilityManager> rel;
+    if (config_.reliability.enabled) {
+      rel = std::make_shared<reliability::ReliabilityManager>(config_.reliability, logger_);
+    }
     proxy_ = std::make_shared<proxy::ProxyHandler>(handler, router_, registry_, config_.proxy,
-                                                   db.pool_size, logger_);
+                                                   db.pool_size, logger_, nullptr, nullptr,
+                                                   std::move(rel));
     shutdown_.registerComponent("reverse-proxy", [this] { proxy_->stop(); });
     handler = proxy_;
   }

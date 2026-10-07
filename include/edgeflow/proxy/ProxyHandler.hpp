@@ -19,6 +19,7 @@
 #include "edgeflow/network/RequestHandler.hpp"
 #include "edgeflow/proxy/UpstreamClient.hpp"
 #include "edgeflow/proxy/UpstreamPool.hpp"
+#include "edgeflow/reliability/ReliabilityManager.hpp"
 #include "edgeflow/routing/Router.hpp"
 
 namespace edgeflow::proxy {
@@ -53,8 +54,11 @@ namespace edgeflow::proxy {
 // a slow backend never stalls the client-side I/O workers. The routable set is still read
 // from the registry for every request (no cache; that is a documented limitation).
 //
-// No retries, no circuit breaking, no failover: one attempt per request (the only repeat is
-// the connection-level one described at UpstreamClient).
+// Reliability (Phase 7, optional): with a ReliabilityManager a request may make several
+// attempts: failed attempts are retried with exponential backoff when the policy says it is
+// safe, on another backend where one is eligible, behind per-backend circuit breakers and
+// inside one total time budget (see edgeflow/reliability/). Without one: one attempt per
+// request (the only repeat is the connection-level one described at UpstreamClient).
 class ProxyHandler final : public network::RequestHandler {
  public:
   struct Stats {
@@ -63,6 +67,7 @@ class ProxyHandler final : public network::RequestHandler {
     std::uint64_t responses{0};  // backend responses forwarded
     std::uint64_t gateway_errors{0};
     UpstreamPool::Stats pool;
+    reliability::ReliabilityManager::Stats reliability;  // all zero without reliability
   };
 
   // `lookup_threads` bounds concurrent registry calls (use the database pool size).
@@ -70,7 +75,8 @@ class ProxyHandler final : public network::RequestHandler {
                std::shared_ptr<discovery::ServiceRegistry> registry, config::ProxyConfig config,
                unsigned lookup_threads, std::shared_ptr<logging::Logger> logger,
                std::shared_ptr<discovery::NameResolver> names = nullptr,
-               UpstreamPool::Clock pool_clock = nullptr);
+               UpstreamPool::Clock pool_clock = nullptr,
+               std::shared_ptr<reliability::ReliabilityManager> reliability = nullptr);
   ~ProxyHandler() override;
 
   ProxyHandler(const ProxyHandler&) = delete;
@@ -93,6 +99,8 @@ class ProxyHandler final : public network::RequestHandler {
 
   [[nodiscard]] Stats stats() const;
   [[nodiscard]] UpstreamPool& pool() noexcept { return *pool_; }
+  // nullptr when reliability is off (one attempt per request).
+  [[nodiscard]] reliability::ReliabilityManager* reliability() noexcept { return reliability_.get(); }
 
  private:
   class Operation;
@@ -104,6 +112,7 @@ class ProxyHandler final : public network::RequestHandler {
   const std::shared_ptr<routing::Router> router_;
   const std::shared_ptr<discovery::ServiceRegistry> registry_;
   const config::ProxyConfig config_;
+  const std::shared_ptr<reliability::ReliabilityManager> reliability_;
   const std::shared_ptr<logging::Logger> logger_;
 
   // Destruction order matters: the client and pool must outlive nothing that uses them, the

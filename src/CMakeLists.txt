@@ -57,6 +57,8 @@ add_library(edgeflow_core STATIC
   proxy/ProxyHeaders.cpp
   proxy/UpstreamClient.cpp
   proxy/UpstreamPool.cpp
+  reliability/CircuitBreaker.cpp
+  reliability/ReliabilityManager.cpp
   storage/Migrator.cpp
   storage/Postgres.cpp
   "${EDGEFLOW_MIGRATIONS_SOURCE}")

@@ -7,6 +7,7 @@
 #include <iterator>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 
 #include <yaml-cpp/yaml.h>
 
@@ -38,6 +39,10 @@ constexpr long long kMaxProxyConnectTimeoutMs = 60000;
 constexpr long long kMaxProxyIdleConnections = 1024;
 constexpr long long kMinResponseBytes = 1024;
 constexpr long long kMaxResponseBytes = 256LL * 1024 * 1024;
+constexpr long long kMaxRetryAttempts = 10;
+constexpr long long kMaxBreakerThreshold = 1000;
+constexpr long long kMaxHalfOpenRequests = 100;
+constexpr std::size_t kMaxReliabilityListEntries = 32;
 
 using Errors = std::vector<std::string>;
 
@@ -422,6 +427,155 @@ void parseProxy(const YAML::Node& root, ProxyConfig& out, Errors& errors) {
   }
 }
 
+bool parseBool(const YAML::Node& section, const std::string& path, const std::string& key,
+               bool& out, Errors& errors) {
+  const auto text = readString(section, path, key, errors);
+  if (!text) return false;
+  if (*text == "true") {
+    out = true;
+  } else if (*text == "false") {
+    out = false;
+  } else {
+    errors.push_back("'" + path + "." + key + "' must be true or false (got '" + *text + "')");
+    return false;
+  }
+  return true;
+}
+
+// A list of scalars under `key`; reports (and returns nullopt for) anything else.
+std::optional<std::vector<std::string>> readScalarList(const YAML::Node& section,
+                                                       const std::string& path,
+                                                       const std::string& key, Errors& errors) {
+  const YAML::Node value = section[key];
+  if (isUnset(value)) return std::nullopt;
+  if (!value.IsSequence()) {
+    errors.push_back("'" + path + "." + key + "' must be a list");
+    return std::nullopt;
+  }
+  if (value.size() > kMaxReliabilityListEntries) {
+    errors.push_back("'" + path + "." + key + "' has too many entries (limit " +
+                     std::to_string(kMaxReliabilityListEntries) + ")");
+    return std::nullopt;
+  }
+  std::vector<std::string> out;
+  for (const auto& item : value) {
+    if (!item.IsScalar()) {
+      errors.push_back("'" + path + "." + key + "' must contain only scalar values");
+      return std::nullopt;
+    }
+    out.push_back(item.Scalar());
+  }
+  return out;
+}
+
+void parseReliability(const YAML::Node& root, ReliabilityConfig& out, Errors& errors) {
+  const YAML::Node section = sectionOf(root, "reliability", errors);
+  rejectUnknownKeys(section, "reliability", {"enabled", "timeout", "retry", "circuit_breaker"},
+                    errors);
+  parseBool(section, "reliability", "enabled", out.enabled, errors);
+
+  const YAML::Node timeout = sectionOf(section, "timeout", errors);
+  rejectUnknownKeys(timeout, "reliability.timeout", {"total_timeout_ms"}, errors);
+  if (auto v = readBounded(timeout, "reliability.timeout", "total_timeout_ms", kMinTimeoutMs,
+                           kMaxIntervalMs, errors)) {
+    out.timeout.total_timeout = std::chrono::milliseconds{*v};
+  }
+
+  const YAML::Node retry = sectionOf(section, "retry", errors);
+  rejectUnknownKeys(retry, "reliability.retry",
+                    {"enabled", "max_attempts", "base_delay_ms", "max_delay_ms", "jitter_percent",
+                     "retryable_statuses", "retryable_methods"},
+                    errors);
+  auto& r = out.retry;
+  parseBool(retry, "reliability.retry", "enabled", r.enabled, errors);
+  if (auto v = readBounded(retry, "reliability.retry", "max_attempts", 1, kMaxRetryAttempts,
+                           errors)) {
+    r.max_attempts = static_cast<unsigned>(*v);
+  }
+  if (auto v = readBounded(retry, "reliability.retry", "base_delay_ms", 1, kMaxProxyConnectTimeoutMs,
+                           errors)) {
+    r.base_delay = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(retry, "reliability.retry", "max_delay_ms", 1, kMaxTimeoutMs, errors)) {
+    r.max_delay = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(retry, "reliability.retry", "jitter_percent", 0, 100, errors)) {
+    r.jitter_percent = static_cast<unsigned>(*v);
+  }
+  if (r.base_delay > r.max_delay) {
+    errors.push_back("'reliability.retry.base_delay_ms' (" + std::to_string(r.base_delay.count()) +
+                     ") must not exceed 'reliability.retry.max_delay_ms' (" +
+                     std::to_string(r.max_delay.count()) + ")");
+  }
+  if (auto statuses = readScalarList(retry, "reliability.retry", "retryable_statuses", errors)) {
+    std::vector<unsigned> parsed;
+    for (const auto& text : *statuses) {
+      long long code = 0;
+      try {
+        std::size_t used = 0;
+        code = std::stoll(text, &used);
+        if (used != text.size()) throw std::invalid_argument{text};
+      } catch (const std::exception&) {
+        errors.push_back("'reliability.retry.retryable_statuses' entries must be integers (got '" +
+                         text + "')");
+        continue;
+      }
+      if (code < 400 || code > 599) {
+        errors.push_back("'reliability.retry.retryable_statuses' entries must be between 400 and "
+                         "599 (got " + std::to_string(code) + ")");
+        continue;
+      }
+      if (std::find(parsed.begin(), parsed.end(), static_cast<unsigned>(code)) != parsed.end()) {
+        errors.push_back("'reliability.retry.retryable_statuses' lists " + std::to_string(code) +
+                         " twice");
+        continue;
+      }
+      parsed.push_back(static_cast<unsigned>(code));
+    }
+    r.retryable_statuses = std::move(parsed);
+  }
+  if (auto methods = readScalarList(retry, "reliability.retry", "retryable_methods", errors)) {
+    std::vector<std::string> parsed;
+    static const char* const kKnown[] = {"GET", "HEAD", "OPTIONS", "PUT", "DELETE",
+                                         "POST", "PATCH", "TRACE"};
+    for (const auto& method : *methods) {
+      if (std::none_of(std::begin(kKnown), std::end(kKnown),
+                       [&](const char* known) { return method == known; })) {
+        errors.push_back("'reliability.retry.retryable_methods' must contain upper-case HTTP "
+                         "methods (GET, HEAD, OPTIONS, PUT, DELETE, POST, PATCH, TRACE); got '" +
+                         method + "'");
+        continue;
+      }
+      if (std::find(parsed.begin(), parsed.end(), method) != parsed.end()) {
+        errors.push_back("'reliability.retry.retryable_methods' lists " + method + " twice");
+        continue;
+      }
+      parsed.push_back(method);
+    }
+    r.retryable_methods = std::move(parsed);
+  }
+
+  const YAML::Node breaker = sectionOf(section, "circuit_breaker", errors);
+  rejectUnknownKeys(breaker, "reliability.circuit_breaker",
+                    {"enabled", "failure_threshold", "recovery_timeout_ms",
+                     "half_open_max_requests"},
+                    errors);
+  auto& b = out.circuit_breaker;
+  parseBool(breaker, "reliability.circuit_breaker", "enabled", b.enabled, errors);
+  if (auto v = readBounded(breaker, "reliability.circuit_breaker", "failure_threshold", 1,
+                           kMaxBreakerThreshold, errors)) {
+    b.failure_threshold = static_cast<unsigned>(*v);
+  }
+  if (auto v = readBounded(breaker, "reliability.circuit_breaker", "recovery_timeout_ms",
+                           kMinTimeoutMs, kMaxIntervalMs, errors)) {
+    b.recovery_timeout = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(breaker, "reliability.circuit_breaker", "half_open_max_requests", 1,
+                           kMaxHalfOpenRequests, errors)) {
+    b.half_open_max_requests = static_cast<unsigned>(*v);
+  }
+}
+
 void parseShutdown(const YAML::Node& root, ShutdownConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "shutdown", errors);
   rejectUnknownKeys(section, "shutdown", {"grace_period_seconds"}, errors);
@@ -491,7 +645,10 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
 
   Config parsed;
   Errors errors;
-  rejectUnknownKeys(root, "", {"application", "server", "database", "health_check", "routing", "proxy", "shutdown"}, errors);
+  rejectUnknownKeys(root, "",
+                    {"application", "server", "database", "health_check", "routing", "proxy",
+                     "reliability", "shutdown"},
+                    errors);
   parseApplication(root, parsed.application, errors);
   parseServer(root, parsed.server, errors);
   parseDatabase(root, parsed.database, errors);
@@ -505,6 +662,11 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
   if (parsed.proxy.enabled && !parsed.database.enabled) {
     errors.push_back("'proxy.enabled' requires 'database.enabled': the proxy forwards only to "
                      "instances that routing selects from the service registry");
+  }
+  parseReliability(root, parsed.reliability, errors);
+  if (parsed.reliability.enabled && !parsed.proxy.enabled) {
+    errors.push_back("'reliability.enabled' requires 'proxy.enabled': reliability wraps the "
+                     "upstream attempts of the reverse proxy");
   }
   parseShutdown(root, parsed.shutdown, errors);
 

@@ -60,5 +60,33 @@ proxy:
   idle_timeout_ms: 30000     # 10..3600000; an idle pooled connection older than this is closed, not reused
   max_response_bytes: 16777216   # 1024..268435456 (default 16 MiB); a larger backend response answers 502
 
+reliability:
+  # Phase 7 reliability engineering around the reverse proxy. Needs proxy.enabled.
+  # Enabled for docker compose with short delays so a failure and a recovery are visible in seconds.
+  enabled: true
+  timeout:
+    # Bound for the WHOLE proxied request: every attempt and every backoff pause. One attempt
+    # gets at most min(proxy.upstream_timeout_ms, what is left of this budget).
+    total_timeout_ms: 12000  # 10..3600000
+  retry:
+    enabled: true
+    max_attempts: 3          # 1..10; TOTAL attempts including the first (1 = never retry)
+    base_delay_ms: 100       # 1..60000; pause before the first retry; doubles for each further one
+    max_delay_ms: 2000       # 1..600000; cap of the pause; >= base_delay_ms
+    jitter_percent: 20       # 0..100; each pause is shortened by up to this percent at random
+    # A backend answer with one of these statuses counts as a failed attempt; every other
+    # status (including 4xx and other 5xx) is the application's answer and is forwarded.
+    retryable_statuses: [502, 503, 504]   # each 400..599; [] = never retry on a status
+    # Methods retried after the backend MAY have processed the request (timeout, reset,
+    # retryable status). A request that provably never reached a backend (connection refused,
+    # name not resolved, connect timeout) is retried whatever its method.
+    retryable_methods: [GET, HEAD, OPTIONS]
+  circuit_breaker:
+    # One circuit per backend instance: CLOSED -> OPEN -> HALF-OPEN -> CLOSED.
+    enabled: true
+    failure_threshold: 3       # 1..1000; consecutive failed requests that open the circuit
+    recovery_timeout_ms: 6000  # 10..3600000; time open before probe request(s) are let through
+    half_open_max_requests: 1  # 1..100; probes allowed in flight; that many successes close it
+
 shutdown:
   grace_period_seconds: 5    # 0..300; in-flight requests may finish within this time

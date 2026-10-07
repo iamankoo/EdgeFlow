@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace edgeflow::config {
 
@@ -97,6 +98,52 @@ struct ProxyConfig {
   std::size_t max_response_bytes{16 * 1024 * 1024};
 };
 
+// Phase 7 reliability engineering around the reverse proxy (see edgeflow/reliability/).
+// Off by default: with it off the proxy makes exactly one attempt per request (Phase 6).
+// Requires `proxy.enabled`.
+struct RetryConfig {
+  bool enabled{true};
+  // TOTAL number of attempts per request, the first one included: 1 means "never retry",
+  // 3 means "one try and at most two retries".
+  unsigned max_attempts{3};
+  // Pause before retry n (n = 1 is the first retry): min(max_delay, base_delay * 2^(n-1)),
+  // reduced by up to `jitter_percent` percent (so never above the nominal delay).
+  std::chrono::milliseconds base_delay{100};
+  std::chrono::milliseconds max_delay{2000};
+  unsigned jitter_percent{20};  // 0..100; 0 = no jitter
+  // A backend answer with one of these statuses counts as a failed attempt (and may be
+  // retried); every other status is the application's answer and is forwarded as it is.
+  std::vector<unsigned> retryable_statuses{502, 503, 504};
+  // Methods whose requests may be retried after the backend may already have received them.
+  // A request that provably never reached a backend (connection refused, name not resolved,
+  // connect timeout) is retried whatever the method.
+  std::vector<std::string> retryable_methods{"GET", "HEAD", "OPTIONS"};
+};
+
+struct CircuitBreakerConfig {
+  bool enabled{true};
+  // Consecutive failed requests (per backend instance) that open the circuit.
+  unsigned failure_threshold{5};
+  // How long a circuit stays open before one bounded probe is allowed (half-open).
+  std::chrono::milliseconds recovery_timeout{30000};
+  // Probe requests allowed in flight while half-open; that many successes close the circuit,
+  // one failure reopens it.
+  unsigned half_open_max_requests{1};
+};
+
+struct ReliabilityTimeoutConfig {
+  // Bound for the WHOLE proxied request: every attempt, every backoff pause. An attempt gets at
+  // most min(proxy.upstream_timeout_ms, what is left of this budget).
+  std::chrono::milliseconds total_timeout{30000};
+};
+
+struct ReliabilityConfig {
+  bool enabled{false};
+  ReliabilityTimeoutConfig timeout;
+  RetryConfig retry;
+  CircuitBreakerConfig circuit_breaker;
+};
+
 struct ShutdownConfig {
   std::chrono::seconds grace_period{5};
 };
@@ -108,6 +155,7 @@ struct Config {
   HealthCheckConfig health_check;
   RoutingConfig routing;
   ProxyConfig proxy;
+  ReliabilityConfig reliability;
   ShutdownConfig shutdown;
 };
 

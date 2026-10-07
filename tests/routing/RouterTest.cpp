@@ -123,6 +123,67 @@ TEST_P(RouterTest, NamesTheConfiguredStrategy) {
   EXPECT_EQ(router()->strategy(), routing::makeLoadBalancer(GetParam())->name());
 }
 
+// --- Phase 7: failover filters ---
+
+TEST_P(RouterTest, AFilterRemovesInstancesBeforeTheStrategyChooses) {
+  auto r = router();
+  routing::Router::Filter filter;
+  filter.eligible = [](const discovery::ServiceInstance& i) { return i.instance_id != "a"; };
+  std::set<std::string> seen;
+  for (int i = 0; i < 300; ++i) {
+    const auto chosen = r->route("shop", routing::RoutingContext{"key-" + std::to_string(i)}, filter);
+    ASSERT_TRUE(chosen.ok()) << chosen.error().message;
+    seen.insert(chosen.value().instance_id);
+  }
+  EXPECT_EQ(seen.count("a"), 0U) << "excluded";
+  EXPECT_EQ(seen.count("d"), 0U) << "unhealthy: still never routable";
+  EXPECT_FALSE(seen.empty());
+}
+
+TEST_P(RouterTest, WhenNothingIsEligibleTheAnswerIsNoRoutableInstance) {
+  auto r = router();
+  routing::Router::Filter filter;
+  filter.eligible = [](const discovery::ServiceInstance&) { return false; };
+  const auto chosen = r->route("shop", {}, filter);
+  ASSERT_FALSE(chosen.ok());
+  EXPECT_EQ(chosen.error().code, RegistryErrorCode::NoRoutableInstance);
+  EXPECT_NE(chosen.error().message.find("no eligible instance"), std::string::npos);
+}
+
+TEST_P(RouterTest, PreferredInstancesWinAndTheRestAreTheFallback) {
+  auto r = router();
+  routing::Router::Filter filter;
+  filter.preferred = [](const discovery::ServiceInstance& i) { return i.instance_id == "c"; };
+  for (int i = 0; i < 50; ++i) {
+    const auto chosen = r->route("shop", routing::RoutingContext{"k" + std::to_string(i)}, filter);
+    ASSERT_TRUE(chosen.ok());
+    EXPECT_EQ(chosen.value().instance_id, "c");
+  }
+  // Nobody matches the preference: any eligible instance is acceptable.
+  filter.preferred = [](const discovery::ServiceInstance&) { return false; };
+  filter.eligible = [](const discovery::ServiceInstance& i) { return i.instance_id == "b"; };
+  const auto fallback = r->route("shop", {}, filter);
+  ASSERT_TRUE(fallback.ok());
+  EXPECT_EQ(fallback.value().instance_id, "b");
+}
+
+TEST_P(RouterTest, AnEmptyFilterBehavesLikeThePlainRoute) {
+  auto r = router();
+  const routing::Router::Filter none;
+  const auto filtered = r->route("shop", routing::RoutingContext{"same-key"}, none);
+  ASSERT_TRUE(filtered.ok());
+  EXPECT_NE(filtered.value().instance_id, "d");
+}
+
+TEST_P(RouterTest, FilteringReportsUnknownServicesLikeThePlainRoute) {
+  auto r = router();
+  const routing::Router::Filter none;
+  const auto unknown = r->route("nope", {}, none);
+  ASSERT_FALSE(unknown.ok());
+  EXPECT_EQ(unknown.error().code, RegistryErrorCode::ServiceNotFound);
+}
+
+
 INSTANTIATE_TEST_SUITE_P(AllStrategies, RouterTest, ::testing::ValuesIn(kAllStrategies));
 
 // ---- each strategy's characteristic behaviour, through the router ------------------------------

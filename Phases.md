@@ -1,6 +1,6 @@
 # EdgeFlow — Development Phases
 
-**Current Phase: Phase 6 completed — awaiting Phase 7 requirements**
+**Current Phase: Phase 7 completed — awaiting Phase 8 requirements**
 
 This document is the authoritative roadmap. Phases must not be skipped. A phase begins only after the previous phase has met its exit condition. Later-phase functionality must not be implemented early unless strictly required as a dependency and clearly documented.
 
@@ -14,7 +14,7 @@ Before implementing a phase, its detailed implementation prompt must be cross-ch
 | 4 | Health Checking & Dynamic Discovery | Completed |
 | 5 | Load Balancing Engine | Completed |
 | 6 | Reverse Proxy & Request Forwarding | Completed |
-| 7 | Reliability Engineering | Not started |
+| 7 | Reliability Engineering | Completed |
 | 8 | Redis Cache & Distributed Rate Limiting | Not started |
 | 9 | Observability, Testing & Performance | Not started |
 | 10 | Optimization, Production Hardening & Release | Not started |
@@ -164,6 +164,8 @@ CLOSED → OPEN → HALF-OPEN → CLOSED
 ```
 
 **Exit condition:** Backend failures do not unnecessarily cascade into gateway failures.
+
+**Completion summary:** Met. `ReliabilityManager` (new `reliability` module) wraps every proxied request in a configurable policy: a total request budget (`reliability.timeout.total_timeout_ms`; each attempt gets at most `min(proxy.upstream_timeout_ms, what is left)`), a retry policy (`max_attempts` counts every attempt, exponential backoff `base_delay_ms` doubling up to `max_delay_ms` with downward jitter, `retryable_statuses`, `retryable_methods`; a request that provably never reached a backend is retried whatever its method), a circuit breaker per backend instance (CLOSED -> OPEN -> HALF-OPEN -> CLOSED; one failure per request per backend; `failure_threshold`, `recovery_timeout_ms`, `half_open_max_requests`), failover (a retry prefers a backend the request has not tried; backends with an open circuit are skipped by the router filter) and graceful degradation (when nothing is eligible the client gets a fast `503` or the last backend answer; the gateway itself, `/health` and other services stay up). Verified with real containers in Docker Compose (PostgreSQL, health checker, Python backend containers): with one of two backends answering `503`, 8 of 8 requests succeeded through the other, the circuit opened after 3 failed requests and the failing backend received no traffic while it was open, then went OPEN -> HALF-OPEN -> CLOSED and served again; a single backend that always fails was tried exactly 3 times (backoff pauses 99 ms and 191 ms), then answered from the open circuit in about 1 ms; a hanging backend ended at 12.0 s (the total budget); stopping a backend container left 9 of 9 requests (GET and POST) successful; POST/DELETE with a `503` were not retried (one backend hit), a `500` was forwarded without retry, HEAD was retried. **Exit condition ("Backend failures do not unnecessarily cascade into gateway failures") is met in these runs:** no client received a gateway error while a healthy backend existed, and the gateway and unrelated services stayed available while every backend of one service failed. 630 tests pass with GCC 13 (Debug and Release) and Clang 18 (`-Werror`) against PostgreSQL (58 are skipped when no database is available: 572 pass); the 330 reliability/proxy/pool/async/server/application/router tests passed 10 repeated runs, AddressSanitizer+UBSan reported no errors and ThreadSanitizer no warnings on them. Limitations: circuit state is per process and in memory; no metrics (Phase 9); no cache or rate limiting (Phase 8). No performance figures were measured. The remote GitHub Actions run has not been confirmed. See `summary.md`.
 
 ---
 

@@ -89,8 +89,12 @@ class UpstreamClient {
                  std::shared_ptr<logging::Logger> logger);
 
   // Starts the exchange. `request` is sent as given (the caller prepared the headers).
-  [[nodiscard]] std::shared_ptr<UpstreamCall> send(UpstreamEndpoint endpoint,
-                                                   network::HttpRequest request, Callback done);
+  // `deadline_cap` (Phase 7: what is left of the request's total budget) lowers the whole-
+  // exchange deadline for this call below `upstream_timeout`; the connect timeout is lowered
+  // with it when it would exceed the deadline. It never raises either limit.
+  [[nodiscard]] std::shared_ptr<UpstreamCall> send(
+      UpstreamEndpoint endpoint, network::HttpRequest request, Callback done,
+      std::optional<std::chrono::milliseconds> deadline_cap = std::nullopt);
 
  private:
   boost::asio::io_context& io_;

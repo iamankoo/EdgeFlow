@@ -23,6 +23,10 @@ add_executable(edgeflow_tests
   proxy/ProxyHeadersTest.cpp
   proxy/ProxyPostgresTest.cpp
   proxy/UpstreamPoolTest.cpp
+  reliability/CircuitBreakerTest.cpp
+  reliability/ReliabilityPostgresTest.cpp
+  reliability/ReliabilityProxyTest.cpp
+  reliability/RetryPolicyTest.cpp
   routing/RoutingPostgresTest.cpp
   routing/RouterTest.cpp
   routing/StrategyTest.cpp
