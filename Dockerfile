@@ -17,6 +17,8 @@ COPY include ./include
 COPY src ./src
 COPY tests ./tests
 COPY config ./config
+# bench/ is copied for the tests that check the load-test configuration; the benchmark targets are off.
+COPY bench ./bench
 COPY db ./db
 
 # Bounded: Beast-heavy translation units need ~1 GB each, so unbounded parallelism can

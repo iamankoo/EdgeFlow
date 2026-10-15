@@ -1,6 +1,6 @@
 # EdgeFlow — Development Phases
 
-**Current Phase: Phase 8 completed — awaiting Phase 9 requirements**
+**Current Phase: Phase 9 completed — awaiting Phase 10 requirements**
 
 This document is the authoritative roadmap. Phases must not be skipped. A phase begins only after the previous phase has met its exit condition. Later-phase functionality must not be implemented early unless strictly required as a dependency and clearly documented.
 
@@ -16,7 +16,7 @@ Before implementing a phase, its detailed implementation prompt must be cross-ch
 | 6 | Reverse Proxy & Request Forwarding | Completed |
 | 7 | Reliability Engineering | Completed |
 | 8 | Redis Cache & Distributed Rate Limiting | Completed |
-| 9 | Observability, Testing & Performance | Not started |
+| 9 | Observability, Testing & Performance | Completed |
 | 10 | Optimization, Production Hardening & Release | Not started |
 
 ---
@@ -220,6 +220,8 @@ Build:
 Load testing target: **~10K requests/sec**. The final resume metric MUST be based on actual measured results.
 
 **Exit condition:** EdgeFlow has reproducible benchmark and test results.
+
+**Completion summary:** Met. New `observability` module: a Prometheus-compatible `GET /metrics` endpoint (text format 0.0.4, off by default, `metrics.*`) answered by an outermost `MetricsHandler` that times every other request, with exact fixed-bucket latency histograms (78 buckets, 100 us to about 62 s) and a sliding window for requests/sec, error ratio and p50/p95/p99; per-component collectors read the existing counters at scrape time (active/accepted/rejected connections, request count by status class, 5xx error rate, backend latency measured around every exchange with a backend, cache hits/misses and hit ratio, retries and failovers, circuit-breaker trips and states, rejected requests by reason, Redis state). 53 tests were added (786 in total) covering the metrics at unit, integration, concurrency and full-stack level (the whole Application over real PostgreSQL and Redis, each metric compared with the behaviour that provokes it), and the test suite was run in every configuration of the project: GCC Debug and Release and Clang 18 (`-Werror`) 786/786 with PostgreSQL and Redis; the 499 Phase 8/9, reliability, proxy, pool, async, server, application and router tests passed 10 repeated runs, AddressSanitizer+UBSan reported no errors and ThreadSanitizer no warnings on them; the Docker image build (no database, no Redis) ran 786 tests with 667 passed, 119 skipped, 0 failed. A real Prometheus server scraped the Compose stack without errors and its totals matched what the clients observed (162 proxied requests, 64 refused with 429, 3 retries and failovers, 1 circuit trip, cache hit ratio 0.5). Benchmarks are reproducible: `bench/micro` (Google Benchmark, optional target) and `bench/load` (a Compose stack, wrk, raw outputs and the gateway's own `/metrics` saved per run, `bench/results/phase9-codespace-4cpu/`). **Measured on a 4 vCPU shared machine (wrk, 64 connections, 3 runs of 20 s):** the server alone 36K requests/s (p99 4.9 ms); a proxied request answered from the Redis cache 11.2K requests/s (p99 10.9 ms); a proxied request that reaches a backend (rate limiter, PostgreSQL routing, proxy) **1.8K requests/s** (p50 34.6 ms, p99 54.0 ms). The ~10K requests/s target is therefore met only for cached responses; improving the uncached path is Phase 10. Limitations: one machine type, closed-loop load, unauthenticated `/metrics`, no per-service labels, no availability (~99.5 %) or 10-instance measurement yet. The remote GitHub Actions run has not been confirmed. See `summary.md`.
 
 ---
 

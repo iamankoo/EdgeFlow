@@ -23,6 +23,10 @@ add_executable(edgeflow_tests
   network/RegistryApiTest.cpp
   network/RequestHandlerTest.cpp
   network/TcpServerTest.cpp
+  observability/MetricsApplicationTest.cpp
+  observability/MetricsFullStackTest.cpp
+  observability/MetricsHandlerTest.cpp
+  observability/MetricsTest.cpp
   proxy/ProxyHandlerTest.cpp
   proxy/ProxyHeadersTest.cpp
   proxy/ProxyPostgresTest.cpp
@@ -43,7 +47,8 @@ target_include_directories(edgeflow_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(edgeflow_tests PRIVATE
   EDGEFLOW_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
   EDGEFLOW_DEFAULT_CONFIG="${PROJECT_SOURCE_DIR}/config/config.yaml"
-  EDGEFLOW_COMPOSE_CONFIG="${PROJECT_SOURCE_DIR}/config/config.compose.yaml")
+  EDGEFLOW_COMPOSE_CONFIG="${PROJECT_SOURCE_DIR}/config/config.compose.yaml"
+  EDGEFLOW_BENCH_CONFIG="${PROJECT_SOURCE_DIR}/bench/load/gateway.yaml")
 target_link_libraries(edgeflow_tests PRIVATE edgeflow::core nlohmann_json::nlohmann_json GTest::gtest_main)
 edgeflow_enable_warnings(edgeflow_tests)
 

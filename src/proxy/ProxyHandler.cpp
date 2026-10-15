@@ -291,6 +291,7 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
     std::optional<std::chrono::milliseconds> cap;
     if (rel_ != nullptr) cap = std::max(remainingBudget(), std::chrono::milliseconds{1});
 
+    attempt_started_ = std::chrono::steady_clock::now();
     auto call = owner_.client_->send(
         UpstreamEndpoint{instance_.host, instance_.port}, std::move(upstream_request),
         [self = shared_from_this()](UpstreamResult result) { self->onUpstream(std::move(result)); },
@@ -382,6 +383,11 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
 
   void endAttempt() {
     const auto kind = classify();
+    owner_.outcomes_[static_cast<std::size_t>(kind)].fetch_add(1, std::memory_order_relaxed);
+    if (owner_.metrics_ && result_.ok()) {
+      owner_.metrics_->backend().record(std::chrono::steady_clock::now() - attempt_started_,
+                                        result_.response.result_int() >= 500);
+    }
     logAttempt(kind);
     settleBreaker(kind);
     releaseCount();  // before anything is handed back or retried
@@ -552,6 +558,7 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
   // The fields below belong to one step at a time; the hand-offs between steps (post to the
   // lookup pool, the I/O threads or the strand) order every access.
   unsigned attempts_made_{0};
+  std::chrono::steady_clock::time_point attempt_started_;  // when the current exchange was handed to the client
   reliability::AttemptLedger ledger_;
   std::string previous_key_;
   discovery::ServiceInstance instance_;  // the backend of the current attempt
@@ -725,6 +732,7 @@ ProxyHandler::Stats ProxyHandler::stats() const {
     stats.active = operations_.size();
   }
   stats.pool = pool_->stats();
+  for (std::size_t i = 0; i < outcomes_.size(); ++i) stats.attempt_outcomes[i] = outcomes_[i].load();
   if (reliability_) stats.reliability = reliability_->stats();
   return stats;
 }

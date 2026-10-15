@@ -13,13 +13,13 @@ The stack below is **locked**. No technology may be substituted or added without
 | Shared state / cache | Redis | Active (Phase 8) | Low-latency shared store for response caching and distributed rate-limit state. |
 | Containers | Docker, Docker Compose | Phase 1 active | Reproducible local deployment of the gateway, backends, PostgreSQL and Redis. |
 | Unit testing | GoogleTest | Phase 1 active (Phase 2 adds real-socket integration tests) | Standard C++ test framework with CMake/CTest integration. |
-| Benchmarking | Google Benchmark | Planned (Phase 9) | Micro-benchmarks for hot paths such as routing and rate limiting. |
+| Benchmarking | Google Benchmark | Active (Phase 9; optional target, v1.8.5) | Micro-benchmarks for hot paths such as routing and rate limiting. |
 | Logging | spdlog | Phase 1 active | Fast, structured-friendly logging with minimal overhead. |
 | JSON | nlohmann/json | Phase 2 active (response bodies) | Ergonomic JSON handling for APIs and metadata. |
 | Configuration | YAML | Phase 1 active (yaml-cpp) | Human-readable, hierarchical configuration. |
-| Metrics | Prometheus-compatible | Planned (Phase 9) | Standard exposition format that works with common tooling. |
+| Metrics | Prometheus-compatible | Active (Phase 9; own text-format writer) | Standard exposition format that works with common tooling. |
 | Profiling | perf, Valgrind, flamegraphs | Planned (Phase 10) | CPU, memory and contention analysis to drive evidence-based optimization. |
-| Load testing | wrk, custom C++ load generators | Planned (Phase 9) | wrk for raw HTTP throughput; custom tools where wrk cannot model the scenario. |
+| Load testing | wrk, custom C++ load generators | Active (Phase 9; wrk 4.1, no custom generator was needed) | wrk for raw HTTP throughput; custom tools where wrk cannot model the scenario. |
 | CI | GitHub Actions | Phase 1 active | Automated build and test on every push. |
 
 ## Load-balancing algorithms (locked, implemented in Phase 5)

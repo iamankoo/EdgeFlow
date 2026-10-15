@@ -138,5 +138,14 @@ rate_limit:
     refill_per_second: 2500
     overrides: {}            # e.g. { billing: { capacity: 100, refill_per_second: 50 } }
 
+metrics:
+  # Phase 9: Prometheus-compatible endpoint (text format 0.0.4): requests/sec, active connections,
+  # request count, error rate, p50/p95/p99 request latency, backend latency, cache hit ratio, retries,
+  # circuit-breaker trips, rejected requests, Redis state. Off by default. The endpoint has no
+  # authentication and shows internals: enable it only on a trusted network.
+  enabled: false
+  path: /metrics        # GET (or HEAD) only; never rate limited, cached or counted as traffic
+  window_seconds: 10    # 1..300; sliding window of the requests/sec, error ratio and p50/p95/p99 gauges
+
 shutdown:
   grace_period_seconds: 5    # 0..300; in-flight requests may finish within this time

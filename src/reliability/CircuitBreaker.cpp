@@ -170,4 +170,17 @@ std::size_t CircuitBreakerRegistry::size() const {
   return breakers_.size();
 }
 
+CircuitBreakerRegistry::StateCounts CircuitBreakerRegistry::stateCounts() const {
+  StateCounts counts;
+  const std::lock_guard lock(mutex_);
+  for (const auto& entry : breakers_) {
+    switch (entry.second->state()) {
+      case CircuitState::Closed: ++counts.closed; break;
+      case CircuitState::Open: ++counts.open; break;
+      case CircuitState::HalfOpen: ++counts.half_open; break;
+    }
+  }
+  return counts;
+}
+
 }  // namespace edgeflow::reliability

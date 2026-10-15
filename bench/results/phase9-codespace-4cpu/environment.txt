@@ -1,0 +1,15 @@
+date_utc: 2026-10-15T06:13:28Z
+kernel: Linux 6.8.0-1064-azure
+cpus: 4
+cpu_model: AMD EPYC 7763 64-Core Processor
+memory: 15Gi
+docker: Docker version 29.8.0-1, build 88096ef00576baf72a9cb45caa45c0544c40e0a7
+wrk: wrk debian/4.1.0-4build2 [epoll] Copyright (C) 2012 Will Glozer
+image: edgeflow:phase9 sha256:8cd24ffa32f9b0e62b05252602fc87a75ee7f0f5376422dd9ed9068c6ecbed13
+git_commit: ab817151e0760113d6cff9bce8be7c441d019a69
+wrk_threads: 2
+wrk_connections: 64
+warmup_seconds: 5
+run_seconds: 20
+runs: 3
+gateway_config_sha256: 52f427ccf4c8c1fc8f69229c3db9b9ed365a9d91f75a00272dcbfd8a739c7151

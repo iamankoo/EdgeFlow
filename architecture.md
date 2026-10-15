@@ -619,7 +619,7 @@ See the README table. `config/config.yaml` ships it off; `config/config.compose.
 - The routable set is still read from PostgreSQL on every attempt (no routing cache); a retry costs another routing round trip.
 - `connection_count` is not reconciled after a hard kill (Phase 6 limitation unchanged). A request cancelled by shutdown after the grace period gets a closed connection, not a response.
 - Retry classification is by status code, method and failure kind only: no idempotency keys, no `Retry-After` handling.
-- No metrics (Phase 9); cache and rate limiting arrived in Phase 8 (section 24). No performance figure has been measured.
+- Metrics arrived in Phase 9 (section 25), cache and rate limiting in Phase 8 (section 24). The only performance figures are the ones in `bench/results` (section 25).
 
 
 ## 24. Phase 8 Implementation: Redis Cache & Distributed Rate Limiting
@@ -696,4 +696,84 @@ PolicyHandler                         one Operation per proxied request (asynchr
 - Buckets refill with Redis's clock and a script run costs one Redis round trip per proxied request (plus one for a cacheable GET lookup); the routable-set read from PostgreSQL per attempt (Phase 6) is unchanged. No performance figure has been measured.
 - Concurrent misses of one cold URL all reach a backend (no coalescing).
 - No cluster support: keys of one request are read by one Lua script, which assumes a single Redis (or one hash slot).
-- The counters (`RateLimiter::Stats`, `ResponseCache::Stats`, `PolicyHandler::Stats`) are kept but not exported: metrics are Phase 9.
+- The counters (`RateLimiter::Stats`, `ResponseCache::Stats`, `PolicyHandler::Stats`) are exported as metrics since Phase 9 (section 25).
+
+
+## 25. Phase 9 Implementation: Observability, Testing & Performance
+
+### Implemented in Phase 9
+
+```text
+include/edgeflow/observability/   Metrics (Histogram, WindowedStats, MetricsWriter, Metrics)  MetricsHandler
+src/observability/                matching implementations
+include/edgeflow/config/Config.hpp   MetricsConfig   (metrics.enabled / path / window_seconds)
+src/core/Application.cpp          creates Metrics, registers one collector per component, wraps the handler
+src/proxy/ProxyHandler.cpp        times every exchange with a backend; counts attempts by outcome
+src/reliability/CircuitBreaker.*  CircuitBreakerRegistry::stateCounts()
+bench/                            Google Benchmark micro-benchmarks, wrk load test (docker-compose + scripts)
+tests/observability/              metrics unit, handler, application and full-stack tests
+```
+
+```text
+Client -> HttpServer -> MetricsHandler  (outermost: times everything, serves GET /metrics)
+                         -> PolicyHandler (Phase 8) -> ProxyHandler (Phase 6/7) -> registry API / local endpoints
+                              |                          |
+                              |  every component keeps its own counters (atomics) as before;
+                              +--> Metrics::render() reads them through one collector per component
+                                   when /metrics is scraped (no copy, no extra work on the request path)
+```
+
+### What is recorded where
+
+- **On the request path (a few atomic increments per request):** `MetricsHandler` records, for every request except the scrape, its latency (from reaching the handler to its response being ready), status class, kind (`proxy` = `/proxy/...`, `local` = everything else) and the in-flight count; `ProxyHandler` records the time of every exchange with a backend that answered (`Metrics::backend()`) and counts every attempt by outcome. Measured cost of one `recordRequest` (single thread): 58 ns; of one histogram `record`: 8 ns (see `bench/results/phase9-codespace-4cpu/micro-benchmarks.txt`).
+- **At scrape time:** collectors read `HttpServer` (active, accepted, rejected connections), `ProxyHandler::stats()` and the upstream pool, `ReliabilityManager::stats()` and `CircuitBreakerRegistry::stateCounts()`, `PolicyHandler` / `RateLimiter` / `ResponseCache` stats and `RedisClient::stats()`. A component that is not enabled contributes no families (no misleading zeros).
+- **Latency histograms** use 78 fixed buckets at four per octave from 100 us (about 62 s at the top) plus +Inf, so a quantile read back from them is within about 19 % of the true value (usually much closer, buckets are interpolated). They are exact counters: nothing is sampled. The Prometheus bucket series are written at every second bound (39 + Inf) to keep the output small; the in-process resolution stays fine.
+- **Windowed values** (requests/sec, error ratio, p50/p95/p99): one slot per second for `metrics.window_seconds` plus the current one. A slot is zeroed under a mutex once per second when its second comes round again; everything else is lock-free. `requests_per_second` is the sum of the completed seconds of the window divided by their number (the second in progress is not part of the rate); the error ratio and the quantiles use the whole window including the current second. Without samples quantiles and ratios are `NaN` (undefined), not 0. The lifetime histogram (since start) is exposed as a Prometheus histogram, so `rate()` and `histogram_quantile()` work in Prometheus as usual; the windowed gauges give the same answers without a Prometheus.
+
+### Metric catalogue (`GET <metrics.path>`, Prometheus text format 0.0.4)
+
+| Phase 9 requirement | metric(s) |
+|---|---|
+| requests/sec | `edgeflow_http_requests_per_second` (window), `edgeflow_http_requests_total{kind}` (counter) |
+| active connections | `edgeflow_http_active_connections`, `edgeflow_http_connections_accepted_total`, `edgeflow_http_in_flight_requests`, `edgeflow_proxy_active_requests` |
+| request count | `edgeflow_http_requests_total{kind}`, `edgeflow_http_responses_total{class}`, `edgeflow_proxy_requests_total` |
+| error rate | `edgeflow_http_error_ratio` (window, 5xx / requests), `edgeflow_http_errors_total` (5xx), `edgeflow_proxy_gateway_errors_total` |
+| p50 / p95 / p99 latency | `edgeflow_http_request_latency_seconds{quantile="0.5\|0.95\|0.99"}` (window), `edgeflow_http_request_duration_seconds` (histogram) |
+| backend latency | `edgeflow_backend_latency_seconds` (histogram), `edgeflow_backend_latency_window_seconds{quantile}`, `edgeflow_backend_attempts_total{outcome}` |
+| cache hit ratio | `edgeflow_cache_hit_ratio` (hits / (hits + misses), since start), `edgeflow_cache_lookups_total{result="hit\|miss\|error"}`, `edgeflow_cache_stores_total`, `..._store_failures_total`, `..._invalidations_total` |
+| retry count | `edgeflow_retries_total`, `edgeflow_failovers_total`, `edgeflow_retry_exhausted_total` |
+| circuit-breaker trips | `edgeflow_circuit_breaker_trips_total` (closed or half-open to open), `edgeflow_circuit_breakers{state}`, `edgeflow_circuit_breaker_rejections_total` |
+| rejected requests | `edgeflow_rejected_requests_total{reason="rate_limited\|rate_limit_unavailable\|connection_limit"}`, `edgeflow_rate_limit_decisions_total{result}` |
+| supporting | `edgeflow_redis_up`, `edgeflow_redis_commands_total`, `..._failures_total`, `..._fast_failures_total`, `edgeflow_upstream_connections_{created,reused,stale}_total`, `edgeflow_build_info{version}`, `edgeflow_uptime_seconds`, `edgeflow_http_connections_rejected_total` |
+
+Definitions that matter when reading them: an *error* is a 5xx the client received (a backend's own 5xx forwarded, or one EdgeFlow generated); a `429` is the rate limiter working and is a *rejection*, not an error. *Backend latency* is the time from handing a request to the upstream client until its response (any status) is complete, including a wait for the proxy's I/O thread, so it grows when the proxy itself is saturated. A request *cancelled* before it was answered is not recorded.
+
+### The endpoint
+
+`GET` (or `HEAD`) on `metrics.path` (default `/metrics`, same port as everything else). It is answered above the rate limiter and the cache, so a bucket never refuses a scrape and a scrape never appears as traffic; other methods get `405` with `Allow: GET, HEAD`. It is **unauthenticated and exposes internals**: enable it only on a trusted network (hardening is Phase 10). Off by default (`metrics.enabled`). A custom request handler passed to `Application` is used exactly as given, without metrics.
+
+### Test strategy (what Phase 9 added and how the categories are covered)
+
+| category | suites |
+|---|---|
+| unit | `RespParserTest`, `EncodeCommandTest`, `Sha256Test`, `HistogramTest`, `LatencyBucketsTest`, `WindowedStatsTest` (fake clock), `MetricsWriterTest`, `MetricsTest`, `RetryPolicyTest`, `BackoffPolicyTest`, `CircuitBreakerTest`, `CircuitBreakerRegistryTest`, `HealthTrackerTest`, `ThresholdTest`, `ValidationTest`, `UpstreamRequestTest`, `ClientResponseTest`, `ProxyTargetTest`, `RequestIdTest`, `ConfigManager*Test`, `MetricsConfigTest`, `CommandLineTest` |
+| integration | `MetricsHandlerTest`, `MetricsApplicationTest` (real server), `HttpServer*Test`, `TcpServerTest`, `ProxyTest` (real server, scripted TCP backends), `PolicyTest` (real server + proxy + scripted backends + Redis), `ReliabilityTest`, `RegistryApiTest`, `HealthCheckerTest`, `Application*Test` |
+| concurrency | `HistogramTest.ConcurrentRecordingLosesNothing`, `WindowedStatsTest.ConcurrentWritersAndReadersWithTheRealClock`, `MetricsTest.ScrapingWhileRequestsAreRecordedIsSafeAndTotalsAreExact`, `MetricsApplicationTest.ScrapingWhileServingConcurrentClientsIsSafe`, `MetricsFullStackTest.ConcurrentTrafficIsCountedExactly`, `CircuitBreakerConcurrencyTest`, `RateLimiterTest` / `PolicyTest` concurrent grants (exact capacity under 600 concurrent requests), `UpstreamPoolTest`, `AsyncHandlerTest`, `HttpServerConcurrencyTest`; ThreadSanitizer runs all of them |
+| routing | `RoundRobinTest`, `LeastConnectionsTest`, `WeightedRoutingTest`, `ConsistentHashingTest` and the shared `AllStrategies/...` contract tests, `RouterBehaviourTest`, `RoutingConfigTest`, `RouteEndpointTest`, `RoutingPostgresTest` |
+| database | `PostgresRegistryTest`, `PostgresRegistryUnavailableTest`, `PgPoolTest`, `PgPoolUnavailableTest`, `MigratorTest`, `HealthCheckerPostgresTest`, `RoutingPostgresTest`, `RegistryApiPostgresTest`, `ProxyPostgresTest`, `ReliabilityPostgresTest`, `PolicyPostgresTest`, `MetricsFullStackTest` (real PostgreSQL) |
+| Redis | `RedisClientTest`, `RateLimiterTest`, `ResponseCacheTest`, `PolicyTest`, `PolicyPostgresTest`, `MetricsFullStackTest.RedisTroubleIsVisibleInTheMetrics` (real Redis, plus a relay that can refuse, hang and restart it) |
+| failure | backend refused/reset/hung/garbage and timeouts (`ProxyTest`), retries, failover and circuit breaking (`ReliabilityTest`), Redis down/hung/restarted (`RedisClientTest`, `PolicyTest`, `RateLimiterTest`), PostgreSQL outage (`PostgresRegistryUnavailableTest`, `HealthCheckerPostgresTest`, `RegistryApiUnavailableTest`), shutdown with requests in flight (`HttpServerShutdownTest`, `ProxyTest`, `PolicyTest`), client resets (`HttpServer*Test`) |
+| end-to-end | `ProxyPostgresTest`, `ReliabilityPostgresTest`, `PolicyPostgresTest`, `MetricsFullStackTest` (client to backend through the real `Application`), and the Docker Compose runs documented in `summary.md` |
+
+`MetricsFullStackTest` is the proof that each Phase 9 metric sees the behaviour it is supposed to see: real clients and scripted backends provoke retries, failover, circuit trips, 5xx errors, cache hits and misses, 429 rejections and a Redis outage, and the metrics are compared with what the clients observed.
+
+### Benchmark methodology and limits
+
+`bench/` documents and automates both measurements ([bench/README.md](bench/README.md)). The load test is closed-loop wrk against a Compose stack on one machine, so every figure is limited by the whole box and under-reports the latency of a saturated server; repeated runs are listed individually. The backends are EdgeFlow instances answering a tiny banner (a Python backend would have been the bottleneck), PostgreSQL runs with `fsync=off` and Redis without persistence. A reproducible result is the committed `bench/results/<label>/` directory (environment, every raw wrk output, the gateway's `/metrics` after each run, `summary.md`).
+
+### Limitations
+
+- The windowed gauges are per process and approximate at slot boundaries by design (a thread more than a whole window behind drops its sample from the window, never from the lifetime totals); histogram quantiles have the bucket resolution described above.
+- Per-service, per-backend or per-route labels are deliberately absent (label cardinality follows the registry); a per-backend view needs a bounded design (Phase 10 or later).
+- No tracing beyond the request id in the logs, no push gateway, no exemplars, no authentication on `/metrics`.
+- Only the gateway's own view is measured; the load test's client-side latency comes from wrk.

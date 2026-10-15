@@ -115,6 +115,14 @@ class CircuitBreakerRegistry {
   // nullptr when this backend has no breaker yet (nothing has been recorded: closed).
   [[nodiscard]] std::shared_ptr<CircuitBreaker> find(const std::string& key) const;
   [[nodiscard]] std::size_t size() const;
+  // How many breakers are in each state right now (a breaker that has not seen a request yet does
+  // not exist: it is closed by definition and not counted).
+  struct StateCounts {
+    std::size_t closed{0};
+    std::size_t open{0};
+    std::size_t half_open{0};
+  };
+  [[nodiscard]] StateCounts stateCounts() const;
 
  private:
   const CircuitBreakerSettings settings_;

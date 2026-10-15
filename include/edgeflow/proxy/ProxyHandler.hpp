@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -17,6 +18,7 @@
 #include "edgeflow/discovery/ServiceRegistry.hpp"
 #include "edgeflow/logging/Logger.hpp"
 #include "edgeflow/network/RequestHandler.hpp"
+#include "edgeflow/observability/Metrics.hpp"
 #include "edgeflow/proxy/UpstreamClient.hpp"
 #include "edgeflow/proxy/UpstreamPool.hpp"
 #include "edgeflow/reliability/ReliabilityManager.hpp"
@@ -67,6 +69,9 @@ class ProxyHandler final : public network::RequestHandler {
     std::uint64_t responses{0};  // backend responses forwarded
     std::uint64_t gateway_errors{0};
     UpstreamPool::Stats pool;
+    // Attempts to reach a backend by outcome, indexed by reliability::AttemptKind (Success,
+    // RetryableStatus, NotSent, MaybeProcessed, Permanent, Cancelled).
+    std::array<std::uint64_t, 6> attempt_outcomes{};
     reliability::ReliabilityManager::Stats reliability;  // all zero without reliability
   };
 
@@ -98,6 +103,10 @@ class ProxyHandler final : public network::RequestHandler {
   void stop();
 
   [[nodiscard]] Stats stats() const;
+
+  // Phase 9: from now on the time of every exchange with a backend that answered is recorded in
+  // `metrics->backend()`. Call it before the proxy serves traffic (it is not synchronised).
+  void attachMetrics(std::shared_ptr<observability::Metrics> metrics) { metrics_ = std::move(metrics); }
   [[nodiscard]] UpstreamPool& pool() noexcept { return *pool_; }
   // nullptr when reliability is off (one attempt per request).
   [[nodiscard]] reliability::ReliabilityManager* reliability() noexcept { return reliability_.get(); }
@@ -137,6 +146,8 @@ class ProxyHandler final : public network::RequestHandler {
   std::atomic<std::uint64_t> requests_{0};
   std::atomic<std::uint64_t> responses_{0};
   std::atomic<std::uint64_t> gateway_errors_{0};
+  std::array<std::atomic<std::uint64_t>, 6> outcomes_{};
+  std::shared_ptr<observability::Metrics> metrics_;
 };
 
 }  // namespace edgeflow::proxy

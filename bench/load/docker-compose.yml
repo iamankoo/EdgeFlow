@@ -1,0 +1,58 @@
+# The stack the load tests run against (see bench/README.md).
+#
+#   postgres   service registry                      redis     cache + rate-limit state
+#   backend1-3 EdgeFlow instances with the default configuration used as fast C++ backends
+#              (GET / answers a small JSON banner), so the backend is not the bottleneck
+#   gateway    the EdgeFlow under test, configured by gateway.yaml
+#
+# Start it with bench/load/run.sh (it also registers the backends); EDGEFLOW_IMAGE selects the image.
+name: edgeflow-bench
+
+x-edgeflow: &edgeflow
+  image: ${EDGEFLOW_IMAGE:-edgeflow:phase9}
+  restart: "no"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: edgeflow
+      POSTGRES_DB: edgeflow
+      POSTGRES_PASSWORD: bench_password
+    # A benchmark does not need durability: fsync off keeps the registry's writes (connection
+    # counts) from measuring the disk.
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "max_connections=100"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edgeflow -d edgeflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-ttl"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  backend1:
+    <<: *edgeflow
+    ports: ["127.0.0.1:9101:8080"]
+  backend2:
+    <<: *edgeflow
+  backend3:
+    <<: *edgeflow
+
+  gateway:
+    <<: *edgeflow
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    environment:
+      EDGEFLOW_DB_PASSWORD: bench_password
+    volumes:
+      - ./gateway.yaml:/etc/edgeflow/config.yaml:ro
+    ports: ["127.0.0.1:8080:8080"]
+    stop_grace_period: 10s

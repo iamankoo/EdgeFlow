@@ -361,6 +361,25 @@ TEST(CircuitBreakerRegistryTest, BackendsHaveIndependentCircuits) {
   EXPECT_EQ(registry.find("never/seen@x:1"), nullptr);
 }
 
+TEST(CircuitBreakerRegistryTest, StateCountsReportEveryStateOnce) {
+  FakeClock clock;
+  CircuitBreakerRegistry registry(settings(1, 1000ms), clock.fn());
+  EXPECT_EQ(registry.stateCounts().closed + registry.stateCounts().open + registry.stateCounts().half_open, 0U);
+  auto probing = registry.get("s/probing@h:1");
+  auto open = registry.get("s/open@h:2");
+  (void)registry.get("s/closed@h:3");
+  failTimes(*probing, 1);
+  clock.advance(1000ms);
+  failTimes(*open, 1);
+  const auto admission = probing->tryAcquire();  // the recovery period of this one is over: a probe
+  ASSERT_TRUE(admission.admitted);
+  const auto counts = registry.stateCounts();
+  EXPECT_EQ(counts.closed, 1U);
+  EXPECT_EQ(counts.open, 1U);
+  EXPECT_EQ(counts.half_open, 1U);
+  probing->recordSuccess(admission);
+  EXPECT_EQ(registry.stateCounts().closed, 2U);
+}
 TEST(CircuitBreakerRegistryTest, AReRegisteredEndpointStartsWithACleanCircuit) {
   FakeClock clock;
   CircuitBreakerRegistry registry(settings(1), clock.fn());

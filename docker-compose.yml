@@ -42,7 +42,7 @@ services:
   edgeflow:
     build:
       context: .
-    image: edgeflow:phase8
+    image: edgeflow:phase9
     container_name: edgeflow
     restart: "no"
     depends_on:

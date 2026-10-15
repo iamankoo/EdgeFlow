@@ -15,6 +15,7 @@
 #include "edgeflow/logging/Logger.hpp"
 #include "edgeflow/network/HttpServer.hpp"
 #include "edgeflow/network/RequestHandler.hpp"
+#include "edgeflow/observability/Metrics.hpp"
 #include "edgeflow/proxy/ProxyHandler.hpp"
 #include "edgeflow/redis/RedisClient.hpp"
 #include "edgeflow/routing/Router.hpp"
@@ -78,6 +79,8 @@ class Application {
   [[nodiscard]] redis::RedisClient* redisClient() const noexcept { return redis_.get(); }
   // The rate limit / cache layer in front of the proxy (null when neither is on).
   [[nodiscard]] gateway::PolicyHandler* policyHandler() const noexcept { return policy_.get(); }
+  // The metrics (null unless `metrics.enabled` and no custom request handler).
+  [[nodiscard]] observability::Metrics* metrics() const noexcept { return metrics_.get(); }
   // The running health checker (null unless `health_check.enabled`).
   [[nodiscard]] discovery::HealthChecker* healthChecker() const noexcept {
     return health_checker_.get();
@@ -86,6 +89,10 @@ class Application {
  private:
   // Connects to PostgreSQL, applies migrations and mounts the registry API over `handler`.
   [[nodiscard]] bool initializeRegistry(std::shared_ptr<network::RequestHandler>& handler);
+
+  // Registers what /metrics reports besides the request-path metrics: one collector per component,
+  // each reading that component's own counters when the endpoint is scraped.
+  void registerMetricsCollectors();
 
   config::Config config_;
   std::shared_ptr<logging::Logger> logger_;
@@ -97,6 +104,7 @@ class Application {
   std::shared_ptr<proxy::ProxyHandler> proxy_;            // set when proxy.enabled
   std::shared_ptr<redis::RedisClient> redis_;             // set when redis + cache/rate limit are on
   std::shared_ptr<gateway::PolicyHandler> policy_;        // set when cache/rate limit are on
+  std::shared_ptr<observability::Metrics> metrics_;       // set when metrics.enabled
   std::unique_ptr<discovery::HealthChecker> health_checker_;
   std::unique_ptr<network::HttpServer> http_server_;
 

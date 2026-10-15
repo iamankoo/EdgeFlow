@@ -133,5 +133,11 @@ rate_limit:
         capacity: 5
         refill_per_second: 1
 
+metrics:
+  # Phase 9: GET /metrics on the same port (Prometheus text format).
+  enabled: true
+  path: /metrics
+  window_seconds: 10
+
 shutdown:
   grace_period_seconds: 5    # 0..300; in-flight requests may finish within this time

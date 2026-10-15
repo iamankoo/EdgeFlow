@@ -1,0 +1,52 @@
+2026-10-15T05:57:35+00:00
+Running /workspaces/b-bench/bench/edgeflow_micro_bench
+Run on (4 X 3246.59 MHz CPU s)
+CPU Caches:
+  L1 Data 32 KiB (x2)
+  L1 Instruction 32 KiB (x2)
+  L2 Unified 512 KiB (x2)
+  L3 Unified 32768 KiB (x1)
+Load Average: 2.24, 2.38, 1.70
+------------------------------------------------------------------------------------------------
+Benchmark                                      Time             CPU   Iterations UserCounters...
+------------------------------------------------------------------------------------------------
+BM_RoundRobin/3                              198 ns          198 ns      3620757 items_per_second=5.04295M/s
+BM_RoundRobin/10                             572 ns          572 ns      1234518 items_per_second=1.74889M/s
+BM_RoundRobin/100                          10562 ns        10538 ns        64634 items_per_second=94.8935k/s
+BM_LeastConnections/3                       5.37 ns         5.37 ns    101731218 items_per_second=186.295M/s
+BM_LeastConnections/10                      45.7 ns         45.6 ns     17999836 items_per_second=21.9417M/s
+BM_LeastConnections/100                      473 ns          473 ns      1459985 items_per_second=2.11441M/s
+BM_Weighted/3                                330 ns          329 ns      2126915 items_per_second=3.03498M/s
+BM_Weighted/10                              1408 ns         1408 ns       497296 items_per_second=710.229k/s
+BM_Weighted/100                            62187 ns        62111 ns        11893 items_per_second=16.1002k/s
+BM_ConsistentHashing/3                       246 ns          246 ns      2892581 items_per_second=4.06314M/s
+BM_ConsistentHashing/10                      717 ns          717 ns       979771 items_per_second=1.3945M/s
+BM_ConsistentHashing/100                   11858 ns        11857 ns        58343 items_per_second=84.3352k/s
+BM_RoundRobin_4threads/10/threads:4          255 ns          993 ns       711336 items_per_second=1.00696M/s
+BM_MapProxyTarget                           50.6 ns         50.6 ns     13906754 items_per_second=19.7585M/s
+BM_MakeUpstreamRequest                       554 ns          554 ns      1245707 items_per_second=1.80413M/s
+BM_MakeClientResponse/256                    401 ns          401 ns      1718053 bytes_per_second=608.796Mi/s items_per_second=2.49363M/s
+BM_MakeClientResponse/16384                 5876 ns         5876 ns       118235 bytes_per_second=2.59686Gi/s items_per_second=170.188k/s
+BM_CircuitBreakerClosedPath/threads:1       18.3 ns         18.3 ns     38716006 items_per_second=54.7119M/s
+BM_CircuitBreakerClosedPath/threads:4       8.50 ns         33.3 ns     20770896 items_per_second=30.0675M/s
+BM_RetryDecision                            6.01 ns         6.01 ns    118051037 items_per_second=166.432M/s
+BM_Sha256/32                                 400 ns          400 ns      1748233 bytes_per_second=76.2287Mi/s
+BM_Sha256/512                               2517 ns         2514 ns       286971 bytes_per_second=194.191Mi/s
+BM_Sha256/16384                            65477 ns        65472 ns        10773 bytes_per_second=238.65Mi/s
+BM_EncodeCommand                             164 ns          164 ns      4293698 items_per_second=6.08573M/s
+BM_ParseBulkReply/64                        65.7 ns         65.7 ns     10808752 bytes_per_second=928.838Mi/s
+BM_ParseBulkReply/4096                       254 ns          254 ns      2792942 bytes_per_second=15.0417Gi/s
+BM_ParseBulkReply/262144                   15261 ns        15260 ns        46729 bytes_per_second=15.9983Gi/s
+BM_RateLimiterBucketPlan                     571 ns          571 ns      1197629 items_per_second=1.74984M/s
+BM_CacheSerialize/1024                       279 ns          279 ns      2493692 bytes_per_second=3.42082Gi/s
+BM_CacheSerialize/65536                     1692 ns         1692 ns       413840 bytes_per_second=36.0743Gi/s
+BM_CacheDeserialize/1024                     209 ns          209 ns      3334647 bytes_per_second=4.567Gi/s
+BM_CacheDeserialize/65536                   1649 ns         1648 ns       421045 bytes_per_second=37.0249Gi/s
+BM_CacheKeyAndRules                          616 ns          616 ns      1200485 items_per_second=1.6232M/s
+BM_HistogramRecord/threads:1                8.42 ns         8.42 ns     71276989 items_per_second=118.825M/s
+BM_HistogramRecord/threads:4                46.3 ns          179 ns      3891576 items_per_second=5.60206M/s
+BM_WindowedStatsRecord/threads:1            54.3 ns         54.3 ns     12870561 items_per_second=18.4197M/s
+BM_WindowedStatsRecord/threads:4            51.8 ns          200 ns      3793788 items_per_second=4.99492M/s
+BM_MetricsRecordRequest/threads:1           58.4 ns         58.4 ns     11972847 items_per_second=17.1295M/s
+BM_MetricsRecordRequest/threads:4           65.3 ns          252 ns      2735308 items_per_second=3.97537M/s
+BM_MetricsRender                           31950 ns        31948 ns        22104

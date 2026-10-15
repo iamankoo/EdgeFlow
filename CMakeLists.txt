@@ -18,6 +18,7 @@ endif()
 
 option(EDGEFLOW_BUILD_TESTS "Build the unit tests" ON)
 option(EDGEFLOW_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(EDGEFLOW_BUILD_BENCHMARKS "Build the Google Benchmark micro-benchmarks (bench/)" OFF)
 
 include(CompilerWarnings)
 include(Dependencies)
@@ -27,6 +28,10 @@ add_subdirectory(src)
 if(EDGEFLOW_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(EDGEFLOW_BUILD_BENCHMARKS)
+  add_subdirectory(bench)
 endif()
 
 install(TARGETS edgeflow RUNTIME DESTINATION bin)

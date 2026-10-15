@@ -818,6 +818,34 @@ void parseRateLimit(const YAML::Node& root, RateLimitConfig& out, Errors& errors
   }
 }
 
+bool isValidMetricsPath(const std::string& path) {
+  if (path.size() < 2 || path.size() > 128 || path.front() != '/') return false;
+  // Not the proxy's, the registry's or a local endpoint's namespace.
+  for (const std::string_view reserved : {"/proxy", "/services", "/health", "/echo"}) {
+    if (path == reserved || path.rfind(std::string{reserved} + "/", 0) == 0) return false;
+  }
+  return std::all_of(path.begin(), path.end(), [](unsigned char c) {
+    return std::isalnum(c) != 0 || c == '/' || c == '_' || c == '-' || c == '.';
+  });
+}
+
+void parseMetrics(const YAML::Node& root, MetricsConfig& out, Errors& errors) {
+  const YAML::Node section = sectionOf(root, "metrics", errors);
+  rejectUnknownKeys(section, "metrics", {"enabled", "path", "window_seconds"}, errors);
+  parseBool(section, "metrics", "enabled", out.enabled, errors);
+  if (auto path = readString(section, "metrics", "path", errors)) {
+    if (isValidMetricsPath(*path)) {
+      out.path = *path;
+    } else {
+      errors.push_back("'metrics.path' must start with '/', use only letters, digits and '/_-.', and not "
+                       "be /, /proxy, /services, /health or /echo (or below them)");
+    }
+  }
+  if (auto v = readBounded(section, "metrics", "window_seconds", 1, 300, errors)) {
+    out.window_seconds = static_cast<unsigned>(*v);
+  }
+}
+
 void parseShutdown(const YAML::Node& root, ShutdownConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "shutdown", errors);
   rejectUnknownKeys(section, "shutdown", {"grace_period_seconds"}, errors);
@@ -889,7 +917,7 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
   Errors errors;
   rejectUnknownKeys(root, "",
                     {"application", "server", "database", "health_check", "routing", "proxy",
-                     "reliability", "redis", "cache", "rate_limit", "shutdown"},
+                     "reliability", "redis", "cache", "rate_limit", "metrics", "shutdown"},
                     errors);
   parseApplication(root, parsed.application, errors);
   parseServer(root, parsed.server, errors);
@@ -927,6 +955,7 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
     errors.push_back("'rate_limit.enabled' requires 'proxy.enabled': only proxied requests are "
                      "rate limited");
   }
+  parseMetrics(root, parsed.metrics, errors);
   parseShutdown(root, parsed.shutdown, errors);
 
   if (!errors.empty()) {

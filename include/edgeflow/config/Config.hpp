@@ -222,6 +222,15 @@ struct RateLimitConfig {
   ServiceLimitConfig service;
 };
 
+// Phase 9: Prometheus-compatible metrics endpoint. Off by default; the endpoint is unauthenticated
+// and shows internals, so expose it only on a trusted network.
+struct MetricsConfig {
+  bool enabled{false};
+  std::string path{"/metrics"};  // GET only; never rate limited, cached or counted as traffic
+  // Length of the sliding window behind requests/sec, the error ratio and the p50/p95/p99 gauges.
+  unsigned window_seconds{10};
+};
+
 struct ShutdownConfig {
   std::chrono::seconds grace_period{5};
 };
@@ -237,6 +246,7 @@ struct Config {
   RedisConfig redis;
   CacheConfig cache;
   RateLimitConfig rate_limit;
+  MetricsConfig metrics;
   ShutdownConfig shutdown;
 };
 

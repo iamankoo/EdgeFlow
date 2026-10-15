@@ -49,6 +49,8 @@ add_library(edgeflow_core STATIC
   network/LocalRequestHandler.cpp
   network/RegistryRequestHandler.cpp
   network/TcpServer.cpp
+  observability/Metrics.cpp
+  observability/MetricsHandler.cpp
   routing/ConsistentHashing.cpp
   routing/LeastConnections.cpp
   routing/LoadBalancer.cpp
