@@ -26,6 +26,7 @@ file(WRITE "${EDGEFLOW_MIGRATIONS_TMP}"
 configure_file("${EDGEFLOW_MIGRATIONS_TMP}" "${EDGEFLOW_MIGRATIONS_SOURCE}" COPYONLY)
 
 add_library(edgeflow_core STATIC
+  cache/ResponseCache.cpp
   config/ConfigManager.cpp
   core/Application.cpp
   core/CommandLine.cpp
@@ -38,6 +39,7 @@ add_library(edgeflow_core STATIC
   discovery/Prober.cpp
   discovery/ServiceInstance.cpp
   discovery/Validation.cpp
+  gateway/PolicyHandler.cpp
   logging/Logger.cpp
   network/ConnectionTracker.cpp
   network/HealthProbe.cpp
@@ -57,6 +59,10 @@ add_library(edgeflow_core STATIC
   proxy/ProxyHeaders.cpp
   proxy/UpstreamClient.cpp
   proxy/UpstreamPool.cpp
+  ratelimit/RateLimiter.cpp
+  redis/RedisClient.cpp
+  redis/Resp.cpp
+  redis/Sha256.cpp
   reliability/CircuitBreaker.cpp
   reliability/ReliabilityManager.cpp
   storage/Migrator.cpp

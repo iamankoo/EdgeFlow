@@ -619,4 +619,81 @@ See the README table. `config/config.yaml` ships it off; `config/config.compose.
 - The routable set is still read from PostgreSQL on every attempt (no routing cache); a retry costs another routing round trip.
 - `connection_count` is not reconciled after a hard kill (Phase 6 limitation unchanged). A request cancelled by shutdown after the grace period gets a closed connection, not a response.
 - Retry classification is by status code, method and failure kind only: no idempotency keys, no `Retry-After` handling.
-- No metrics (Phase 9); no cache or rate limiting (Phase 8). No performance figure has been measured.
+- No metrics (Phase 9); cache and rate limiting arrived in Phase 8 (section 24). No performance figure has been measured.
+
+
+## 24. Phase 8 Implementation: Redis Cache & Distributed Rate Limiting
+
+### Implemented in Phase 8
+
+```text
+include/edgeflow/redis/       Resp (RespParser, encodeCommand)  RedisClient  Sha256
+include/edgeflow/ratelimit/   RateLimiter (distributed Token Bucket)
+include/edgeflow/cache/       ResponseCache (key, rules, entry format, Redis storage)
+include/edgeflow/gateway/     PolicyHandler (rate limit -> cache -> proxy)
+src/redis/ src/ratelimit/ src/cache/ src/gateway/   matching implementations
+include/edgeflow/config/Config.hpp   RedisConfig, CacheConfig, RateLimitConfig (+ TokenBucketConfig ...)
+src/core/Application.cpp      builds the Redis client, limiter, cache and PolicyHandler
+```
+
+```text
+Client
+  | GET /proxy/{service}/...
+  v
+HttpServer / HttpConnection           client-side I/O workers (never wait for Redis)
+  v   handleAsync(request, {client address}, done)
+PolicyHandler                         one Operation per proxied request (asynchronous steps)
+  1. RateLimiter.acquire(ip, api key, service)   --Redis EVAL (atomic Token Bucket)-->  Redis
+        refused -> 429 (Retry-After, X-RateLimit-Scope)   [or 503 if Redis is down and the policy is reject]
+  2. ResponseCache.lookup(key)                    --Redis GET-->                         Redis
+        hit  -> answered from the stored entry (X-Cache: HIT), the proxy is never entered
+        miss -> 3.        error -> 3. as if there were no cache
+  3. ProxyHandler (Phase 6/7: routing, retries, circuit breakers, failover) -> backend
+  4. answer: stored with SET ... PX <ttl> when it may be (X-Cache: MISS); an unsafe method that
+     succeeded removes the stored GET of the same URL (DEL)
+```
+
+### Redis client (`redis::RedisClient`)
+
+- **Own RESP2 client on Boost.Asio, no new dependency.** The stack names Redis but no client library; a blocking C client (hiredis) would have had to run on threads like the PostgreSQL calls do, so that a Redis stall could hold a thread per request. This client is asynchronous end to end: `command()` never blocks, replies arrive on its own I/O threads (`redis.io_threads`), so HTTP I/O workers are never held up by Redis. The protocol subset is small (commands are arrays of bulk strings; replies are status, error, integer, bulk and nested arrays) and fully unit-tested (`RespParser` is incremental, bounded in bulk size, array size, nesting and line length, and invalid for good after a violation).
+- **Pool:** up to `redis.pool_size` connections, each running one command at a time (replies cannot be mixed up); further commands wait in a bounded queue (1024) with a deadline. All state lives on one strand, nothing is shared by locks.
+- **Every wait is bounded:** `connect_timeout_ms` (resolve + connect + AUTH), `command_timeout_ms` (from write to complete reply), and the queue.
+- **Failure model.** A connection failure, timeout, broken connection or protocol error marks Redis *unavailable* for `retry_interval_ms`: commands then fail at once, without touching the network and without waiting, and the first command after the interval is the probe. An *error reply* (`-ERR`, `-NOSCRIPT`) is a reply, not a failure. Nothing is retried automatically (whether a written command may be repeated is the caller's decision). An idle pooled connection that the server closed (Redis restarted) is detected before it is used and replaced, so a restart costs no failed command. State changes are logged once ("redis host:port is unavailable ...", "... is available again"). **Cost of an unreachable Redis** (an address that stops answering rather than refusing): one request per `retry_interval_ms` waits up to `connect_timeout_ms` for the probe (measured 1.00 s with 1000 ms, 0.255 s with 250 ms; the Compose configuration uses 250) while every other request continues at once without Redis; a refusing Redis fails the probe immediately.
+- **Password** only through the environment variable named by `redis.password_env`; never in the YAML, never logged.
+- **Shutdown:** `stop()` fails everything waiting or in flight with `Cancelled` (callbacks still run), closes the sockets, lets the I/O threads drain and joins them. The Redis client is registered with the shutdown coordinator first, so it stops last: the HTTP server, the health checker and the proxy have finished every request, and with it every Redis callback those requests waited for.
+
+### Token Bucket rate limiter (`ratelimit::RateLimiter`)
+
+- **Model:** a bucket holds up to `capacity` tokens and gains `refill_per_second` tokens each second, continuously (not in steps); a request takes one token from EACH bucket that applies to it. Scopes: **ip** (client address, `rate_limit.ip`), **api_key** (value of `rate_limit.api_key.header`; a request without the header is not subject to this scope), **service** (the proxied service, shared by all its clients; `rate_limit.service.overrides` gives named services their own limits).
+- **Atomic and distributed.** State and arithmetic live in Redis. One Lua script, executed atomically by Redis, reads all of a request's buckets, refills each from **Redis's own clock** (`TIME`; so gateways with different clocks agree), and takes the tokens only if EVERY bucket has one. Consequences: two EdgeFlow instances (or two threads) can never both take the last token; a request refused by one scope takes nothing from the other scopes; nothing is kept in EdgeFlow's memory. The script is loaded with `SCRIPT LOAD` and run with `EVALSHA`; a lost script cache (`NOSCRIPT`) falls back to `EVAL` and reloads transparently.
+- **Keys:** `<prefix>:rl:ip:<address>`, `<prefix>:rl:key:<sha256 of the API key>` (the key itself never reaches Redis), `<prefix>:rl:svc:<service>`. A bucket is a hash `{tokens, ts}`; it expires (`PEXPIRE`) when it would be full again plus one second, so idle clients leave nothing behind. A bucket that does not exist is full.
+- **Refusal:** `429 Too Many Requests` with `Retry-After` (whole seconds, at least 1, from the exact wait computed by the script) and `X-RateLimit-Scope` of the first empty bucket; the client's connection stays usable; the request never reaches the cache, the proxy or a backend, so it consumes no retry budget, no connection count and no backend capacity.
+- **Client identity:** the peer address of the TCP connection. `X-Forwarded-For` is NOT trusted (there is no trusted-proxy list); behind another proxy all clients share one address.
+- **Redis failure:** `rate_limit.on_redis_failure`: `allow` (default, fail open: the request is served, availability first, in line with Phase 7's "a failing dependency must not become a failing gateway") or `reject` (fail closed: `503 rate limiting is unavailable`). The decision is logged at debug (allow) or warn (reject) per request; the Redis client logs the outage once.
+
+### Response cache (`cache::ResponseCache`)
+
+- **Which requests use it** (lookup and store): `GET`, no body, no `Authorization`, `Cookie`, `Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`, no `Cache-Control: no-store|no-cache`, no `Pragma: no-cache`. Everything else bypasses it (no `X-Cache` header). A successful (< 400) `POST`, `PUT`, `PATCH` or `DELETE` removes the stored entry of the same URL.
+- **Which responses are stored:** answers that came from a backend (they carry the proxy's `Via: 1.1 edgeflow`; gateway-generated errors never do, so a 404 for an unknown service can never be cached) whose status is in `cache.cacheable_statuses` (200 by default), without `Set-Cookie`, `Vary` or `Content-Range`, without `Cache-Control: no-store|no-cache|private`, not `max-age=0`/`s-maxage=0`, with a body of at most `cache.max_entry_bytes`.
+- **Lifetime:** `s-maxage`, else `max-age`, else `cache.default_ttl_seconds`, never more than `cache.max_ttl_seconds`. Redis expires the entry (`SET key value PX ms`); an expired entry no longer exists, it is not "served stale". A hit adds `Age` (from the storing gateway's wall clock).
+- **Key:** `<prefix>:cache:v1:` + SHA-256 of `GET`, the service and the upstream target (path and query exactly as sent). No request header takes part in the key, which is why a response with `Vary` is never stored.
+- **Entry format:** `EFC1`, status, storing time, headers (order and repeats kept), body, every length explicit; a value that does not parse (damaged, or another version) is never served, is reported as a lookup error and is deleted. `Content-Length`, `X-Request-Id`, `Age`, `X-Cache` and `Connection` are not stored; a hit gets the `X-Request-Id` of the request being answered.
+- **Redis failure:** a lookup that cannot be answered is a bypass (the request goes to the backend; `X-Cache` absent), a failed store is only logged. Never an error to the client.
+- **Not implemented (and not claimed):** revalidation (`ETag`, `If-None-Match`, `304`), `Expires`, `Vary`, `stale-while-revalidate`/`stale-if-error`, request coalescing (concurrent misses of one URL each go to a backend), cache purge by prefix, caching of `HEAD`.
+
+### Request id and ordering
+
+`PolicyHandler` chooses the request id once (the client's `X-Request-Id`, else a generated UUID) and writes it into the request it hands to the proxy, so a 429, a cache hit and a forwarded answer all report the same id the client sent (or was given), and the proxy logs and backends see it.
+
+### Configuration
+
+`redis.*`, `cache.*`, `rate_limit.*` (strict, default off; `cache` and `rate_limit` require `redis.enabled` and `proxy.enabled`); see the README table. Starting with Redis unreachable is allowed on purpose: the gateway logs a warning, serves without cache and (by default) without limits, and picks Redis up as soon as it answers. `config/config.compose.yaml` enables everything with small buckets and a 10 s default cache lifetime; `docker-compose.yml` adds `redis:7` (no persistence, 64 MB `maxmemory`, `volatile-ttl` eviction, 128 MB container limit); image tag `edgeflow:phase8`.
+
+### Limitations
+
+- Redis is a single point of shared state: with it down there is no cache and (with `allow`) no limiting; with `reject` there are no proxied requests. A Redis `maxmemory` eviction can drop a bucket (the client gets a full one) or an entry.
+- Client identity is the TCP peer address; no trusted-proxy handling of `X-Forwarded-For`.
+- Buckets refill with Redis's clock and a script run costs one Redis round trip per proxied request (plus one for a cacheable GET lookup); the routable-set read from PostgreSQL per attempt (Phase 6) is unchanged. No performance figure has been measured.
+- Concurrent misses of one cold URL all reach a backend (no coalescing).
+- No cluster support: keys of one request are read by one Lua script, which assumes a single Redis (or one hash slot).
+- The counters (`RateLimiter::Stats`, `ResponseCache::Stats`, `PolicyHandler::Stats`) are kept but not exported: metrics are Phase 9.

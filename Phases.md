@@ -1,6 +1,6 @@
 # EdgeFlow — Development Phases
 
-**Current Phase: Phase 7 completed — awaiting Phase 8 requirements**
+**Current Phase: Phase 8 completed — awaiting Phase 9 requirements**
 
 This document is the authoritative roadmap. Phases must not be skipped. A phase begins only after the previous phase has met its exit condition. Later-phase functionality must not be implemented early unless strictly required as a dependency and clearly documented.
 
@@ -15,7 +15,7 @@ Before implementing a phase, its detailed implementation prompt must be cross-ch
 | 5 | Load Balancing Engine | Completed |
 | 6 | Reverse Proxy & Request Forwarding | Completed |
 | 7 | Reliability Engineering | Completed |
-| 8 | Redis Cache & Distributed Rate Limiting | Not started |
+| 8 | Redis Cache & Distributed Rate Limiting | Completed |
 | 9 | Observability, Testing & Performance | Not started |
 | 10 | Optimization, Production Hardening & Release | Not started |
 
@@ -184,6 +184,8 @@ Build:
 - shared Redis-backed rate-limit state
 
 **Exit condition:** Caching and rate limiting operate correctly under concurrent traffic.
+
+**Completion summary:** Met. Redis (`redis:7`, through a new asynchronous RESP2 client on Boost.Asio: connection pool, connect/command timeouts, a fail-fast window after an outage, stale-connection replacement, AUTH from the environment) holds the response cache and the rate-limit state. `PolicyHandler` sits in front of the Phase 6/7 proxy: a distributed **Token Bucket** (one atomic Lua script in Redis, Redis's own clock, all-or-nothing across the buckets of a request) limits **per client address, per API key (stored only as a hash) and per service** (with per-service overrides) and answers `429` with `Retry-After` and `X-RateLimit-Scope`; a **response cache** (key = SHA-256 of method, service and upstream target; lifetime from `s-maxage`/`max-age` or the default, capped, enforced by Redis; hit/miss reported in `X-Cache`; bypass rules for Authorization, Cookie, Range, If-* and no-cache/no-store requests; Set-Cookie, Vary, private, no-store and gateway-generated responses never stored; invalidation by a successful POST/PUT/PATCH/DELETE) serves repeated GETs without contacting a backend. Redis failure never fails a request: the cache is bypassed and the rate limiter follows `rate_limit.on_redis_failure` (`allow` by default, or `reject` = 503). Verified under concurrent traffic: 160 concurrent requests are granted exactly the bucket's 40 (two or three limiter instances with their own connections, 600 concurrent requests, exactly 100), and on real containers (PostgreSQL, Redis, health checker, backends, up to four EdgeFlow instances sharing one Redis): bursts of 40/100/20 concurrent requests were granted exactly 10/30/5 (API key, address, service), **two EdgeFlow instances alternating over one bucket granted 10 in total (not 20)**, 200 concurrent GETs of a cold URL produced 12 misses and 188 hits and a second round 200 hits with 0 backend requests, a hit is served by a second instance from the first one's entry, an entry expires after its lifetime, a POST invalidates it, with Redis stopped 150 of 150 concurrent requests succeeded without limiting (fail open) while the fail-closed instance answered 503 and `/health` stayed 200, and a `docker restart` of Redis under 6000 concurrent requests produced 6000 x 200. 733 tests pass with GCC 13 (Debug and Release) and Clang 18 (`-Werror`) against PostgreSQL and Redis (111 are skipped without them: 622 pass); the 446 Phase 8, reliability, proxy, pool, async, server, application and router tests passed 10 repeated runs, AddressSanitizer+UBSan reported no errors and ThreadSanitizer no warnings on them. Limitations: Redis is a single shared dependency (no cluster), clients are identified by TCP peer address, no request coalescing, revalidation, `Vary` or `Expires`; an unreachable Redis costs one request per retry interval up to the connect timeout. No performance figures were measured. The remote GitHub Actions run has not been confirmed. See `summary.md`.
 
 ---
 

@@ -3,40 +3,37 @@
 **This file is the resume point for the project.** Tomorrow's session: read this file first, then [Phases.md](Phases.md) (authoritative roadmap), then inspect `git log` and confirm the state below before doing anything. After every completed phase, update this file.
 
 
-**Checkpoint (UPDATED 2026-10-07): Phases 1-7 are COMPLETE. Phase 7 (reliability engineering) is committed as ONE commit, `feat: implement EdgeFlow phase 7 reliability engineering` (its hash is in `git log`; this file is part of that commit and cannot contain its own hash). PHASE 8 HAS NOT STARTED.** Section 9B describes Phase 7; sections 10-12 are updated to the end of Phase 7.
+**Checkpoint (UPDATED 2026-10-15): Phases 1-8 are COMPLETE. Phase 8 (Redis cache and distributed rate limiting) is committed as ONE commit, `feat: implement EdgeFlow phase 8 redis cache and distributed rate limiting` (its hash is in `git log`; this file is part of that commit and cannot contain its own hash). PHASE 9 HAS NOT STARTED.** Section 9C describes Phase 8; sections 10-12 are updated to the end of Phase 8.
 
 ---
 
-## 0. RESUME POINT — Phase 7 complete, Phase 8 not started
+## 0. RESUME POINT — Phase 8 complete, Phase 9 not started
 
-Phase 8 (Redis cache and distributed rate limiting) must only start after explicit authorization from the owner. Before anything else: read this file, then `Phases.md`, run `git log --oneline -8` / `git status`, and confirm `HEAD == origin/main` with a clean tree. A temporary branch `phase7-wip-transfer` (one `wip:` checkpoint commit used only to move the working tree to GitHub Codespaces) may still exist on `origin`; it is NOT part of the project history and can be deleted by the owner.
+Phase 9 (Observability, Testing & Performance) must only start after explicit authorization from the owner. Before anything else: read this file, then `Phases.md`, run `git log --oneline -8` / `git status`, and confirm `HEAD == origin/main` with a clean tree.
 
-### Final Phase 7 validation (all measured; remote CI NOT confirmed)
+### Final Phase 8 validation (all measured; remote CI NOT confirmed)
 
-- **630 CTest tests** (507 before Phase 7, +123): GCC Debug, GCC Release and Clang 18 Debug all 630/630 with PostgreSQL, all `-Werror` (local Docker containers). Without a database: **572 pass, 58 skipped, 0 failed** (58 = 55 earlier + 3 `ReliabilityPostgresTest`), observed in the Docker Release image build (`docker build -t edgeflow:phase7 .`, Release `-Werror`, 127 MB image, in-image CTest "100% tests passed, 0 tests failed out of 630").
-- **Repeat run:** the 330 tests matching `Reliab|Circuit|Retry|Backoff|Proxy|Pool|Async|HttpServer|Application|Router` passed 10 consecutive iterations (GCC Debug, real PostgreSQL).
-- **ASan + UBSan** (GCC, `-fsanitize=address,undefined -O1`, `detect_leaks=1`, real PostgreSQL, local Docker): the same 330 tests, 330/330 passed, 0 sanitizer reports.
-- **ThreadSanitizer** (GCC 13, `-fsanitize=thread -O1 -Wno-tsan`, ASLR disabled with `setarch x86_64 -R`, real PostgreSQL, GitHub Codespace): the same 330 tests, 330/330 passed, 0 `WARNING: ThreadSanitizer`.
-- **Docker Compose runtime demonstration** (real PostgreSQL, real health checker, Python backend containers, GitHub Codespace): results in section 9B.
+- **733 CTest tests** (630 before Phase 8, +103): GCC Debug, GCC Release and Clang 18 Debug all 733/733 with real PostgreSQL and real Redis, all `-Werror`. Without a database and Redis (Docker Release image build, `edgeflow:phase8`, 128 MB): **733 run, 622 pass, 111 skipped, 0 failed**.
+- **Repeat run:** the 446 tests matching the Phase 8, reliability, proxy, pool, async, server, application and router suites passed 10 consecutive iterations (GCC Debug).
+- **ASan + UBSan:** the same 446 tests, 446/446, 0 reports. **ThreadSanitizer:** the same 446 tests, 446/446, 0 warnings (needs `-Wno-error=array-bounds` for a GCC 13 false positive in test code).
+- **Docker Compose runtime demonstration** (PostgreSQL, Redis, health checker, backend containers, up to four EdgeFlow instances sharing one Redis): section 9C.
 
 ### Git identity (resolved 2026-10-06)
 
-The owner's Phase 6 instruction fixes author AND committer to **`Aniket Raj <aniketraj00384@gmail.com>`** (GitHub account `iamankoo`). Phases 1-5 and the summary commit were authored as `iamankoo <aniketraj00384@gmail.com>`; they are not rewritten. Use `Aniket Raj` for all future commits (repository-local git config), still with no Claude/Anthropic/OpenAI/ChatGPT/AI attribution and no `Co-authored-by` or any other trailer.
+The owner's Phase 6 instruction fixes author AND committer to **`Aniket Raj <aniketraj00384@gmail.com>`** (GitHub account `iamankoo`). Phases 1-5 and the summary commit were authored as `iamankoo <aniketraj00384@gmail.com>`; they are not rewritten. Use `Aniket Raj` for all future commits (repository-local git config; a fresh Codespace needs it set: its default email has a different case), still with no Claude/Anthropic/OpenAI/ChatGPT/AI attribution and no `Co-authored-by` or any other trailer.
 
 ### Environment notes (carried forward)
 
-- The Windows host has too little free RAM for Docker sanitizer builds (the Docker engine died twice under memory pressure). Heavy validation (TSan, image build, Compose demo) was moved to a GitHub Codespace (4 cores, 16 GB, Ubuntu 24.04, GCC 13.3, Clang 18, CMake 3.28; installed `ninja-build libboost-dev libpq-dev postgresql-client`).
-- In the Codespace, containers on a user-defined Docker bridge could not reach each other over TCP (DNS resolved, `connect` timed out) until `sudo sysctl -w net.bridge.bridge-nf-call-iptables=0` was set; this is a Codespace/VM setting, not a repository change.
-- TSan: GCC needs `-Wno-tsan`, and ASLR must be disabled (`setarch x86_64 -R`) for the test executable ALSO DURING THE BUILD, because `gtest_discover_tests` runs it after linking.
-- Docker Desktop (local): `C:\Program Files\Docker\Docker\Docker Desktop.exe`; build image `edgeflow:dev3`; mount the repo read-only at `/src`, build volumes at `/build` (a volume must always be mounted at the path it was configured with); network `ef-net`; `-j1` for sanitizer builds.
-- Throwaway PostgreSQL: `docker run -d --name ef-pg -e POSTGRES_USER=edgeflow -e POSTGRES_DB=edgeflow -e POSTGRES_PASSWORD=efpw postgres:16`; tests need `EDGEFLOW_TEST_DB_HOST=<host> EDGEFLOW_TEST_DB_PASSWORD=efpw`. Remove it afterwards.
-- On the local machine plain `docker stop` killed containers after about 1.6 s, so use `docker stop -t N` when testing graceful shutdown; Compose sets `stop_grace_period: 10s`.
-- Other containers on the owner's machine (supabase, backend-*, etc.) belong to the owner: never touch them.
-- Tooling quirks: large bash heredocs may fail (write files with the editor tool); Git Bash needs `MSYS_NO_PATHCONV=1` for `docker exec`/mount paths; never `pkill -f <script>` over SSH (it matches the SSH shell itself).
+- **Heavy validation runs in a GitHub Codespace** (the owner's Windows machine has too little free RAM for Docker sanitizer builds; Docker Desktop died twice under memory pressure). A 4-core / 16 GB codespace was enough for `-j3` builds, `-j2` sanitizer builds, the image build and a five-container Compose stack. Install `ninja-build libboost-dev libpq-dev postgresql-client curl python3`. Never use the local Docker for the image build or the sanitizers. An idle codespace shuts down after the idle timeout and takes its running jobs and containers with it (files under `/workspaces` survive).
+- In the Codespace, containers on a user-defined Docker bridge could not reach each other over TCP until `sudo sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0` was set (a VM setting, not a repository change). Docker's published ports work without it.
+- Real services for the tests: `docker run -d --name ef-pg -p 5432:5432 -e POSTGRES_USER=edgeflow -e POSTGRES_DB=edgeflow -e POSTGRES_PASSWORD=efpw postgres:16` and `docker run -d --name ef-redis -p 6379:6379 redis:7`; tests need `EDGEFLOW_TEST_DB_HOST=127.0.0.1 EDGEFLOW_TEST_DB_PASSWORD=efpw EDGEFLOW_TEST_REDIS_HOST=127.0.0.1` (Redis tests are skipped without the last one). Use a unique key prefix per test (the helpers do); never `FLUSHALL` a shared Redis.
+- TSan: GCC needs `-Wno-tsan` and `-Wno-error=array-bounds`; ASLR must be disabled (`setarch x86_64 -R`) for the test executable ALSO DURING THE BUILD, because `gtest_discover_tests` runs it after linking. Test helpers must be cooperative: no thread may close a socket (or an acceptor) another thread is blocked on; closing an acceptor does not wake a blocking `accept()` (connect to it instead), and a blocking `read` is woken by an OS-level `shutdown` or a receive timeout. The helpers (`FakeRedisServer`, `RedisRelay`) follow that.
+- Tooling quirks: large bash heredocs may fail (write files with the editor tool); a Python script that writes shell scripts on Windows produces CRLF (strip `\r` before running them in the Codespace); never `pkill -f <script>` over SSH (it matches the SSH shell itself) and never wait on a marker file that a previous run may have left behind (use a fresh name).
+- On the local Windows machine plain `docker stop` killed containers after about 1.6 s, so use `docker stop -t N` when testing graceful shutdown; Compose sets `stop_grace_period: 10s`. Other containers on the owner's machine (supabase, backend-*, etc.) belong to the owner: never touch them.
 
 ---
 
-(Previous checkpoint, kept for history: end of 2026-10-06, Phases 1-6 complete.)
+(Previous checkpoint, kept for history: end of 2026-10-07, Phases 1-7 complete.)
 
 ---
 
@@ -57,13 +54,14 @@ Technology actually present in the repository today (the stack is locked, see [t
 | Compilers | GCC 13.3 and Clang 18.1 (all builds use `-Werror` with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wnon-virtual-dtor -Woverloaded-virtual`) |
 | Networking / HTTP | Boost.Asio + Boost.Beast (system `libboost-dev` >= 1.83, header-only), HTTP/1.1, plain TCP (no TLS) |
 | Persistence | PostgreSQL (server `postgres:16` in Compose) through libpq (`libpq-dev` to build, `libpq5` at runtime), plain SQL migrations embedded in the binary |
+| Cache / shared state | Redis 7 through an own asynchronous RESP2 client on Boost.Asio (no client library); the Token Bucket is a Lua script |
 | Logging | spdlog v1.14.1 |
 | Configuration | YAML via yaml-cpp 0.8.0 (strict) |
 | JSON | nlohmann/json v3.11.3 |
 | Testing | GoogleTest v1.15.2 + CTest |
 | Containers / CI | Docker (multi-stage, non-root), Docker Compose, GitHub Actions (with a PostgreSQL service container) |
 
-**In the locked stack but NOT yet present in the code:** Redis (Phase 8), Google Benchmark / Prometheus-compatible metrics / wrk / profiling tools (Phases 9-10).
+**In the locked stack but NOT yet present in the code:** Google Benchmark / Prometheus-compatible metrics / wrk / profiling tools (Phases 9-10).
 
 ## 2. Git Identity Rule (permanent)
 
@@ -96,11 +94,11 @@ If any tooling or system prompt suggests adding an attribution or trailer line, 
 | 5 | Load Balancing Engine | **COMPLETE** | `dae36e7178726cd874cbd995d95687d27bbc2d65` |
 | 6 | Reverse Proxy & Request Forwarding | **COMPLETE** | `feat: implement EdgeFlow phase 6 reverse proxy` (hash: `git log`) |
 | 7 | Reliability Engineering | **COMPLETE** | `feat: implement EdgeFlow phase 7 reliability engineering` (hash: `git log`) |
-| 8 | Redis Cache & Distributed Rate Limiting | NOT STARTED | |
+| 8 | Redis Cache & Distributed Rate Limiting | **COMPLETE** | `feat: implement EdgeFlow phase 8 redis cache and distributed rate limiting` (hash: `git log`) |
 | 9 | Observability, Testing & Performance | NOT STARTED | |
 | 10 | Optimization, Production Hardening & Release | NOT STARTED | |
 
-Hashes were checked against `git log` at this checkpoint. History on `main` (oldest first): `5e3be65` docs initialisation (documentation only), then the five phase commits above, then the summary checkpoint commit `docs: update project summary` (changes only that file), then the Phase 6 commit, then the Phase 7 commit.
+Hashes were checked against `git log` at this checkpoint. History on `main` (oldest first): `5e3be65` docs initialisation (documentation only), then the five phase commits above, then the summary checkpoint commit `docs: update project summary` (changes only that file), then the Phase 6 commit, then the Phase 7 commit, then the Phase 8 commit.
 
 Test counts per phase (all with `-Werror`; "skipped" means tests needing a real PostgreSQL when none is configured, reported by CTest as skipped, never silently passed):
 
@@ -112,7 +110,8 @@ Test counts per phase (all with `-Werror`; "skipped" means tests needing a real 
 | 4 | 272 | 42 need PostgreSQL |
 | 5 | 379 | 49 need PostgreSQL: 330 pass + 49 skipped without a database; 379/379 pass with one |
 | 6 | 507 | 55 need PostgreSQL: 452 pass + 55 skipped without a database; 507/507 pass with one |
-| 7 | **630** | **58 need PostgreSQL**: 572 pass + 58 skipped without a database; 630/630 pass with one |
+| 7 | 630 | 58 need PostgreSQL: 572 pass + 58 skipped without a database; 630/630 pass with one |
+| 8 | **733** | **111 need PostgreSQL or Redis**: 622 pass + 111 skipped without them; 733/733 pass with both |
 
 ## 4. Standing Rules
 
@@ -353,14 +352,14 @@ Docker Compose (`edgeflow:phase6`, `postgres:16`, `config.compose.yaml`: HTTP he
 - **Circuit breaker per backend instance:** CLOSED -> OPEN (after `failure_threshold` consecutive failed requests, at most one failure per request per backend) -> HALF-OPEN (after `recovery_timeout_ms`, up to `half_open_max_requests` probes) -> CLOSED; a failed probe re-opens. State-epoch tickets ignore stale results. Separate from, and sharing no state with, the Phase 4 health checker.
 - **Failover:** `Router::route(service, context, Filter)` applies an `eligible` (circuit admits) and a `preferred` (not yet tried) filter to the single routable snapshot before the strategy chooses. Strategies are untouched.
 - **Graceful degradation:** nothing eligible -> immediate `503`; retries exhausted -> the last backend answer; gateway, `/health`, registry API and other services unaffected. `reliability.enabled: false` keeps Phase 6 behaviour (one attempt).
-- **Configuration `reliability.*`** (strict, default off, requires `proxy.enabled`; defaults: total 30000 ms, 3 attempts, 100-2000 ms backoff, 20 % jitter, circuit 5 failures / 30000 ms recovery / 1 probe). `config/config.compose.yaml` enables it with short delays (total 12000 ms, 3 attempts, 100-2000 ms, circuit 3 / 6000 ms / 1). Compose image tag is `edgeflow:phase7`.
+- **Configuration `reliability.*`** (strict, default off, requires `proxy.enabled`; defaults: total 30000 ms, 3 attempts, 100-2000 ms backoff, 20 % jitter, circuit 5 failures / 30000 ms recovery / 1 probe). `config/config.compose.yaml` enables it with short delays (total 12000 ms, 3 attempts, 100-2000 ms, circuit 3 / 6000 ms / 1). Compose image tag is `edgeflow:phase8`.
 
 ### Phase 7 testing
 
 - **630 CTest tests** (507 before; +123): `RetryPolicyTest`, `CircuitBreakerTest` (deterministic, injected clock/random), `ReliabilityProxyTest` (end-to-end against scripted real TCP backends), `ReliabilityPostgresTest` (3, real PostgreSQL + health checker + `Application`), configuration tests, `RouterTest` filter tests. Results per configuration: see section 0.
 - The sanitizer runs reported nothing, and no production code was changed during the final validation. One validation-environment problem (not a code defect): TSan binaries could not start with ASLR enabled, so the TSan build must run under `setarch x86_64 -R` (section 0).
 
-### Phase 7 runtime validation (Docker Compose, Codespace; `edgeflow:phase7`, `postgres:16`, `config.compose.yaml`)
+### Phase 7 runtime validation (Docker Compose, Codespace; `edgeflow:phase8`, `postgres:16`, `config.compose.yaml`)
 
 Python backend containers `a`, `b` (service `shop`) and `s` (service `solo`) controllable at run time (`ok`, 503, 500, connection reset, hang); their `/health` stays 200 so the health checker keeps them routable and only the reliability layer reacts. Everything below is the literal observed behaviour of a single run; **no performance claim is made**.
 
@@ -390,7 +389,57 @@ Python backend containers `a`, `b` (service `shop`) and `s` (service `solo`) con
 
 ---
 
-## 10. Current Architecture (end of Phase 7)
+## 9C. Phase 8 — Redis Cache & Distributed Rate Limiting (completed 2026-10-15; commit `feat: implement EdgeFlow phase 8 redis cache and distributed rate limiting`)
+
+**Phase 8 is complete.** Exit condition ("Caching and rate limiting operate correctly under concurrent traffic") was demonstrated in tests (concurrent threads, two limiter instances, two gateway instances) and on real containers (PostgreSQL + Redis + health checker + backends + several EdgeFlow instances). Full design: [architecture.md](architecture.md) section 24.
+
+### What was built
+
+- **`redis` module** (`include/edgeflow/redis/`, `src/redis/`): `RedisClient`, an **own asynchronous RESP2 client on Boost.Asio** (the stack names Redis but no client library; a blocking C client would have held a thread per stalled request). Pool of `redis.pool_size` connections (one command at a time each), bounded queue (1024), `connect_timeout_ms` / `command_timeout_ms` bounds, **fail-fast window** (`retry_interval_ms`) after a failure with one probe command afterwards, stale idle connections replaced before use, AUTH from the environment variable named by `redis.password_env`, `stop()` that fails everything in flight with `Cancelled`. `RespParser` (incremental, bounded, invalid for good after a violation) and `Sha256` (own implementation, checked against published vectors).
+- **`ratelimit` module**: `RateLimiter`, a distributed **Token Bucket**. Scopes **ip**, **api_key** (header `rate_limit.api_key.header`, key stored only as SHA-256), **service** (with per-service overrides). One **Lua script executed atomically in Redis**, using **Redis's own clock**, takes a token from every applicable bucket **only if all have one** (a refused request takes nothing from any bucket). `429` with `Retry-After` and `X-RateLimit-Scope`; keys expire when the bucket would be full again (+1 s). `rate_limit.on_redis_failure`: `allow` (default, fail open) or `reject` (503).
+- **`cache` module**: `ResponseCache`. Key = SHA-256 of `GET`, service and upstream target. Cacheable requests: GET without body/Authorization/Cookie/Range/If-*/no-cache/no-store. Stored responses: from a backend (carry the proxy's `Via`), status in `cache.cacheable_statuses` (200), no Set-Cookie/Vary/Content-Range/no-store/no-cache/private/max-age=0, body <= `cache.max_entry_bytes`. Lifetime `s-maxage` > `max-age` > `cache.default_ttl_seconds`, capped by `cache.max_ttl_seconds`, enforced by Redis (`SET ... PX`). A successful POST/PUT/PATCH/DELETE removes the entry of the same URL. Hit: `X-Cache: HIT`, `Age`, the request's own `X-Request-Id`; miss: `X-Cache: MISS`. Damaged entries are never served (removed). Not implemented: revalidation/ETag, Expires, Vary, coalescing, HEAD caching.
+- **`gateway` module**: `PolicyHandler` wraps the proxy: rate limit -> cache -> proxy (Phase 6/7 retries, circuit breakers and failover untouched). Fully asynchronous (no I/O worker waits for Redis); a refused or cached request never reaches the proxy; the request id is chosen once and handed to the proxy; only `/proxy/...` requests are limited or cached (`/health`, `/services/...` never).
+- **Application**: Redis client created when `redis.enabled` and cache or rate limiting is on; **start-up does not fail when Redis is down** (warning, then runs degraded and picks Redis up by itself); shutdown order http-server -> health-checker -> reverse-proxy -> **redis** (stops last).
+- **Configuration**: new strict sections `redis.*`, `cache.*`, `rate_limit.*` (all default off; cache and rate limiting require `redis.enabled` and `proxy.enabled`). `config/config.compose.yaml` enables them (small buckets: ip 30 / 10 per s, api_key 10 / 2 per s, service 200 / 100 per s, service `strict` 5 / 1 per s; cache default 10 s; `connect_timeout_ms: 250`). `docker-compose.yml` adds `redis:7` (no persistence, `maxmemory 64mb`, `volatile-ttl`, 128 MB container limit, health-gated start); image tag `edgeflow:phase8`.
+
+### Phase 8 testing
+
+- **733 CTest tests** (630 before; +103): `RespTest` (parser, encoder, SHA-256 vectors), `RedisClientTest` (scripted fake server for failure injection: refused, hung, garbage, closed mid-command, AUTH, stale connection, queue limit, stop; real Redis: set/get/expiry, binary and 1 MiB values, 1600 concurrent INCR, outage/recovery through a TCP relay), `RateLimiterTest` (capacity, continuous refill, retry-after, refill cap, per-IP/API-key/service buckets, overrides, all-or-nothing, key expiry, script-cache loss, **2-3 limiter instances with their own connections sharing one bucket: 600 concurrent requests grant exactly 100**, 20 clients x 3 rounds each granted exactly their own 5, fail-open/fail-closed, outage and recovery), `ResponseCacheTest` (every rule, serialization incl. truncation at every length, Redis storage/expiry/invalidation/corruption, concurrent writers never produce a mixed entry), `PolicyTest` (end-to-end on the real server and proxy with scripted backends and real Redis: miss/hit without backend contact, expiry, bypass rules, invalidation, headers kept, request ids, 400 concurrent hits -> 1 backend request, 16 concurrent cold requests all answered, 429 with Retry-After, **160 concurrent requests -> exactly 40 granted**, **two gateway instances share one bucket and one cache** (30 tokens total -> exactly 28 granted after 2 spent), Redis down/hung/restarted, reject policy, shutdown while Redis hangs), `PolicyPostgresTest` (the whole `Application` over real PostgreSQL + Redis + health checker, start-up with Redis down, shutdown order), `ConfigManagerRedisTest`.
+- **Results (all `-Werror`, real PostgreSQL and real Redis, final tree):** GCC Debug **733/733**, GCC Release **733/733**, Clang 18 Debug **733/733**. **Repeat run:** the 446 tests matching `Resp|Sha256|EncodeCommand|RedisClientTest|RateLimiterTest|ResponseCacheTest|PolicyTest|PolicyPostgres|ConfigManagerRedis|Reliab|Circuit|Retry|Backoff|Proxy|Pool|Async|HttpServer|Application|Router` passed **10 consecutive iterations**. **ASan + UBSan** (GCC, `-O1`, `detect_leaks=1`): the same 446, **446/446, 0 reports**. **ThreadSanitizer** (GCC, `-O1 -Wno-tsan`, ASLR off): the same 446, **446/446, 0 warnings**. Without a database and Redis (Docker Release image build): **733 run, 622 pass, 111 skipped, 0 failed** (111 = 58 earlier + 53 new that need PostgreSQL or Redis).
+- **What validation found (test code only, no production defect):** a hang when stopping the fake Redis server (closing an acceptor from another thread does not wake a blocking `accept`); the relay's threads depended on another thread closing sockets under them; the first TSan run reported 47 warnings, **every one in the test helpers** (`FakeRedisServer` closing sockets across threads, a test pushing to a vector that async tasks were already reading), **none with a frame in `src/` or `include/`**; the helpers were made cooperative (receive timeouts, stop flags, OS-level `shutdown` only) and the rerun is clean. One test flooded the client with unpaced fire-and-forget stores; it now paces them. The TSan build needs `-Wno-error=array-bounds` for one GCC 13 false positive at `-O1` in test code (a `std::vector<unsigned>` copy); nothing is suppressed at run time.
+
+### Phase 8 runtime validation (Docker Compose, GitHub Codespace; `edgeflow:phase8` 128 MB, `postgres:16`, `redis:7`, `config.compose.yaml`)
+
+Python backend containers `a`, `b` (service `shop`) and `s` (service `strict`) that count requests, plus up to four EdgeFlow containers on the same Redis (`:8080` the Compose service; `:8081` a second instance, same config; `:8083` cache only; `:8084` `on_redis_failure: reject`). Single run on a development codespace; **no performance claim is made**; counts are exact for the capacity (plus whatever refilled in the 0.15-0.5 s each burst took).
+
+- **Start-up log:** `redis ready (redis:6379, 4 connection(s), command timeout 250ms)`, `gateway policy ready: rate limiting on, response cache on`, `EdgeFlow ready`.
+- **Cache:** first GET `x-cache=MISS` (backend hit 1), the next two `HIT` with the backend still at **1 hit for 3 client requests**; each reports the id the client sent (`miss-1`, `hit-2`) or its own generated one; another URL is another entry; **the second EdgeFlow instance answered `HIT` from the entry the first stored**; after the 10 s default lifetime (waited 11 s) the next request was a `MISS` (backend asked again, new body) and the one after a `HIT`; `Authorization` and `Cache-Control: no-cache` requests bypassed it (no `X-Cache` header, backend asked); a `POST` to the URL returned 200 and the next GET was a `MISS` with a new body (invalidated); a backend answer with `Set-Cookie` was `MISS` three times in three requests (never stored); Redis held the entry with `PTTL` 9187 ms of 10 s.
+- **Rate limiting under concurrent load** (`Cache-Control: no-cache` to keep the cache out of it; every request from one client address):
+  - API key `k1` (capacity 10, refill 2/s): **40 requests, 20 threads, 0.33 s -> 10 x 200, 30 x 429** (`X-RateLimit-Scope: api_key`, `Retry-After: 1`, the request id, JSON body); key `k2`: **10 x 200, 30 x 429** (own bucket).
+  - Client address (capacity 30, refill 10/s): **100 requests, 30 threads, 0.29 s -> 30 x 200, 70 x 429** (scope `ip`).
+  - Service `strict` (own limit capacity 5, refill 1/s): **20 requests -> 5 x 200, 15 x 429** (scope `service`).
+  - **Two EdgeFlow instances, one shared bucket:** fresh key `k3` (capacity 10), 40 requests alternating between `:8080` and `:8081`: **10 x 200, 30 x 429** in total (not 20).
+  - Redis held `edgeflow:rl:ip:<address>`, `edgeflow:rl:key:<sha256>` (the key is not in the clear), `edgeflow:rl:svc:shop`, `edgeflow:rl:svc:strict`.
+- **Cache under concurrency** (rate limiting off on `:8083`): **200 concurrent GETs of one cold URL (50 threads, 0.41 s): 12 MISS and 188 HIT, 12 backend requests** (no coalescing: concurrent misses each reach a backend); the same 200 again: **200 HIT, 0 backend requests, one body**; 400 concurrent requests over 8 URLs: **392 HIT, 8 MISS, 8 backend requests**.
+- **Redis stopped (`docker stop`, the address stops answering):** every proxied request still returned 200 and went to a backend (no cache hit); **150 concurrent requests -> 150 x 200, no 429** (the fail-open policy; the bucket is 30); `/health` and the registry API stayed 200; the `reject` instance answered **503 `rate limiting is unavailable`** with its own `/health` 200. Log: `redis redis:6379 is unavailable (timeout: connecting to Redis timed out); commands fail at once for 1000ms and then one is let through to probe it`. **Cost of an unreachable Redis:** with `connect_timeout_ms: 1000` one request per retry interval took **1.00 s** (3 of 3 probe-window requests) and the others 3-44 ms; with `connect_timeout_ms: 250` the probe requests took **0.255 s**; so the Compose config uses 250.
+- **Redis started again:** `redis redis:6379 is available again` is logged; MISS then HIT again; **150 concurrent requests -> 31 x 200, 119 x 429**; the `reject` instance served again.
+- **Redis restarted (`docker restart`) under load:** 6000 requests, 30 threads, 4.24 s (8 URLs, cache on): **6000 x 200** (5386 HIT, 77 MISS, 537 without cache while Redis was away); log: unavailable (`closed: reading from Redis failed: ...`) then `available again` one second later.
+- **Graceful shutdown (`docker stop`):** exit code 0; order `http-server`, `health-checker`, `reverse-proxy`, `redis`, `signal-handlers`.
+- **Cleanup:** the stack, the extra EdgeFlow and backend containers and volumes were removed.
+
+### Phase 8 limitations (real, not achievements)
+
+- Redis is a single shared dependency: with it down there is no cache and (with `allow`) no limiting; with `reject` no proxied request is served. An unreachable (not refusing) Redis costs one request per `retry_interval_ms` up to `connect_timeout_ms`. Redis `maxmemory` eviction can drop an entry or a bucket.
+- Client identity for limiting is the TCP peer address (`X-Forwarded-For` is not trusted); behind another proxy all clients share one bucket.
+- No request coalescing (12 concurrent cold requests -> 12 backend requests in the demonstration), no revalidation, `Vary`, `Expires` or `HEAD` caching; invalidation covers the URL that was written to, not other query strings.
+- Single Redis only (no cluster); a script run is one Redis round trip per proxied request, plus one per cacheable GET.
+- Counters (`RateLimiter::Stats`, `ResponseCache::Stats`, `PolicyHandler::Stats`, `RedisClient::Stats`) are kept but not exported (metrics are Phase 9).
+- PostgreSQL is still read per routing attempt (no routing cache); `connection_count` is still not reconciled after a hard kill; circuit state is per process.
+- The remote GitHub Actions run has still not been confirmed. The workflow now also starts a Redis service container (`EDGEFLOW_TEST_REDIS_HOST/PORT`) next to PostgreSQL, so the Redis-gated tests run there instead of being skipped; that change itself has not run on GitHub. **No performance figures were measured.**
+
+---
+
+## 10. Current Architecture (end of Phase 8)
 
 ```text
 Client
@@ -398,6 +447,9 @@ Client
    v
 HTTP Server  (Boost.Asio/Beast, keep-alive, timeouts, graceful drain)        Phase 2
    |   /proxy/{service}/...
+   v
+Policy: Token Bucket rate limit -> response cache  (Redis = shared state)    Phase 8
+   |   allowed, cache miss / bypass
    v
 Reverse Proxy  (async boundary, header rules, request ids, timeouts)         Phase 6
    |  ^  Reliability: total budget, retry + backoff, per-instance circuit breaker,   Phase 7
@@ -417,11 +469,13 @@ Service Discovery / Registry  (PostgreSQL = source of truth)                 Pha
 Selected backend instance <-> EdgeFlow (forward request, return response)    Phase 6
 ```
 
-Module layout (`include/edgeflow/<module>/`, `src/<module>/`, `tests/<module>/`): `config` (strict YAML), `core` (Application, ShutdownCoordinator, SignalHandler, CommandLine), `logging`, `network` (TcpServer, HttpServer, HttpConnection, ConnectionTracker, Http helpers, RequestHandler/LocalRequestHandler, RegistryRequestHandler, HealthProbe), `storage` (Postgres wrapper, Migrator), `discovery` (ServiceInstance, ServiceRegistry, PostgresServiceRegistry, Validation, HealthState, Prober, NameResolver, HealthChecker), `routing` (LoadBalancer, Strategies, Router), `proxy` (ProxyHandler, ProxyHeaders, UpstreamPool, UpstreamClient), `reliability` (ReliabilityManager, RetryPolicy, BackoffPolicy, CircuitBreaker, CircuitBreakerRegistry, AttemptLedger). SQL lives in `db/migrations/`.
+Module layout (`include/edgeflow/<module>/`, `src/<module>/`, `tests/<module>/`): `config` (strict YAML), `core` (Application, ShutdownCoordinator, SignalHandler, CommandLine), `logging`, `network` (TcpServer, HttpServer, HttpConnection, ConnectionTracker, Http helpers, RequestHandler/LocalRequestHandler, RegistryRequestHandler, HealthProbe), `storage` (Postgres wrapper, Migrator), `discovery` (ServiceInstance, ServiceRegistry, PostgresServiceRegistry, Validation, HealthState, Prober, NameResolver, HealthChecker), `routing` (LoadBalancer, Strategies, Router), `proxy` (ProxyHandler, ProxyHeaders, UpstreamPool, UpstreamClient), `reliability` (ReliabilityManager, RetryPolicy, BackoffPolicy, CircuitBreaker, CircuitBreakerRegistry, AttemptLedger), `redis` (RedisClient, RespParser, Sha256), `ratelimit` (RateLimiter), `cache` (ResponseCache), `gateway` (PolicyHandler). SQL lives in `db/migrations/`.
 
 Startup order in `Application::initialize()`: signal handlers -> (if `database.enabled`) pool, migrations, registry, `Router`, registry API wrapped around the local handler -> (if `proxy.enabled`) `ProxyHandler` as the outermost handler -> HTTP server -> (if `health_check.enabled`) health checker. Shutdown runs in reverse: HTTP server (drain, then force-close at the grace period), health checker, reverse proxy (`reverse-proxy` component), signal handlers.
 
-Configuration sections (`config/config.yaml`; every key documented there and in the README): `application`, `server`, `database` (off), `health_check` (off), `routing` (`round_robin`), `proxy` (off), `reliability` (off), `shutdown`. Unknown keys and out-of-range values are rejected. `config/config.compose.yaml` enables database, HTTP health checks and the proxy for Compose.
+Configuration sections (`config/config.yaml`; every key documented there and in the README): `application`, `server`, `database` (off), `health_check` (off), `routing` (`round_robin`), `proxy` (off), `reliability` (off), `redis` (off), `cache` (off), `rate_limit` (off), `shutdown`. Unknown keys and out-of-range values are rejected. `config/config.compose.yaml` enables database, HTTP health checks and the proxy for Compose.
+
+Phase 8 in `Application::initialize()` (inside the `proxy.enabled` block): when `redis.enabled` and cache or rate limiting is on, the `RedisClient` is created and registered for shutdown FIRST (so it stops LAST), a `PING` logs whether Redis answers (start-up never fails because of Redis), the proxy is built and registered, and `PolicyHandler(proxy, limiter, cache)` becomes the outermost handler. Shutdown order: http-server, health-checker, reverse-proxy, redis, signal-handlers.
 
 HTTP surface: `GET /`, `GET /health`, `POST /echo` (Phase 2); `GET /services`, `POST|GET /services/{svc}/instances`, `GET|PATCH|DELETE /services/{svc}/instances/{id}` (Phase 3); `GET /services/{svc}/routable` (Phase 4); `GET /services/{svc}/route[?key=K]` (Phase 5, decision only); `/proxy/{service}/...` any method (Phase 6; Phase 7 adds retries, circuit breaking and failover behind it, no new routes).
 
@@ -431,13 +485,9 @@ Threading model: HTTP I/O on `server.worker_threads` Asio threads (the proxy ans
 
 ```text
 Phase 7: COMPLETE (section 9B).
+Phase 8: COMPLETE (section 9C).
 
-Phase 8 (NEXT, NOT STARTED):
-- Redis
-- response caching
-- rate limiting (Token Bucket, per IP / API key / route)
-
-Phase 9:
+Phase 9 (NEXT, NOT STARTED):
 - complete observability (Prometheus-compatible metrics, tracing)
 - reproducible performance benchmarks (wrk / custom load tests)
 
@@ -448,13 +498,13 @@ Phase 10:
 - final release
 ```
 
-Nothing above (Phases 8-10) exists even partially in the repository. Phases 6-7 deliberately have no cache, no routing cache, no metrics and no TLS.
+Nothing above (Phases 9-10) exists even partially in the repository. Phases 6-8 deliberately have no routing cache, no metrics and no TLS.
 
-## 12. Next Step — Phase 8 (NOT STARTED; needs explicit owner authorization)
+## 12. Next Step — Phase 9 (NOT STARTED; needs explicit owner authorization)
 
-Phase 8 is **Redis Cache & Distributed Rate Limiting** (see `Phases.md` for the exact list). Before starting: read this file and `Phases.md`, check `git log`/`git status`, confirm Phase 7 is committed and `HEAD == origin/main`, cross-check the Phase 8 prompt against `Phases.md`, and wait for authorization.
+Phase 9 is **Observability, Testing & Performance** (see `Phases.md` for the exact list). Before starting: read this file and `Phases.md`, check `git log`/`git status`, confirm Phase 8 is committed and `HEAD == origin/main`, cross-check the Phase 9 prompt against `Phases.md`, and wait for authorization.
 
-Facts worth knowing when designing Phase 8 (observations, not decisions): Redis is in the locked stack but absent from the code and from `docker-compose.yml`; the proxy completes every request through one path (`finishWith`), where a cache store after a final successful answer could fit, and the attempt loop must not cache a response that is not final; the routable set is still a PostgreSQL read per attempt (a routing cache is a candidate, to be decided); rate limiting should answer before any backend attempt so it never consumes retry budget; the counters in `ReliabilityManager::Stats` are a natural source for Phase 9 metrics; circuit state is per process.
+Facts worth knowing when designing Phase 9 (observations, not decisions): counters already exist but are not exported (`ProxyHandler::Stats`, `ReliabilityManager::Stats`, `RedisClient::Stats`, `RateLimiter::Stats`, `ResponseCache::Stats`, `PolicyHandler::Stats`); log lines carry the request id (`proxy [<id>] ...`, `policy [<id>] ...`) for tracing; the request path is PolicyHandler (rate limit, cache) -> ProxyHandler (routing = one PostgreSQL read, `+1`, attempts, `-1`) so the per-request cost is Redis round trips + PostgreSQL round trips + the backend; no performance figure has ever been measured (the demonstrations only state counts), and the Compose configuration uses deliberately small buckets and short lifetimes, so a benchmark needs its own configuration (rate limiting off or large buckets, a realistic cache lifetime).
 
 ---
 
@@ -464,7 +514,7 @@ Facts worth knowing when designing Phase 8 (observations, not decisions): Redis 
 - The Docker VM has **about 3.7 GB RAM**. Always build with `-j2` (the Dockerfile defaults to `BUILD_JOBS=2`); unbounded parallelism exhausted memory and hung the engine once.
 - Local helper images/volumes created during development (not in the repo, recreate if missing): `edgeflow:dev` -> `edgeflow:dev3` (Ubuntu 24.04, GCC 13, clang, cmake, ninja, git, libboost-dev, libpq-dev, postgresql-client); `edgeflow:valtools` (adds curl, netcat, python3); build volumes `ef_build` (GCC Debug), `ef_build_clang`, `ef_build_rel` (GCC Release); network `ef-net`.
 - Typical full validation: start a throwaway PostgreSQL (`postgres:16`, user/db `edgeflow`) on a Docker network, run the build container on that network with `EDGEFLOW_TEST_DB_HOST=<container>` plus optional `EDGEFLOW_TEST_DB_PORT/NAME/USER/PASSWORD`, then `cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DEDGEFLOW_WARNINGS_AS_ERRORS=ON && cmake --build /build -j2 && ctest --test-dir /build --output-on-failure`. Without `EDGEFLOW_TEST_DB_HOST` the database tests are skipped with a reason.
-- `docker build -t edgeflow:phase7 .` builds Release with `-Werror` and runs the tests (database tests skipped); `docker compose up -d --build` starts PostgreSQL + EdgeFlow with the registry, health checking, routing, the reverse proxy and reliability on (`EDGEFLOW_DB_PASSWORD` overrides the development-only default).
+- `docker build -t edgeflow:phase8 .` builds Release with `-Werror` and runs the tests (database tests skipped); `docker compose up -d --build` starts PostgreSQL + EdgeFlow with the registry, health checking, routing, the reverse proxy and reliability on (`EDGEFLOW_DB_PASSWORD` overrides the development-only default).
 - Tooling quirks: large bash heredocs can fail in this environment (write big files with an editor tool or a script file); Git Bash rewrites `/tmp/...` arguments passed to `docker exec` (set `MSYS_NO_PATHCONV=1`); poll result files that a background job writes only after the job truncated them (use a unique file per run), otherwise a stale file can be mistaken for a fresh result.
 - Do not leave test infrastructure running: remove throwaway containers, networks and volumes after a validation run.
 
@@ -484,5 +534,4 @@ What this requires the project to actually produce: a 10-instance backend deploy
 
 - Remote GitHub Actions run: never confirmed for any phase (workflow unchanged in Phase 6; same configurations validated locally in containers).
 - No performance measurements exist.
-- Temporary branch `phase7-wip-transfer` on `origin` (a `wip:` transfer checkpoint) can be deleted by the owner.
-- Known design limitations carried forward: PostgreSQL read per routing decision and per attempt (no routing cache); circuit state per process and in memory; one probe type and one routing strategy for all instances; `Expect: 100-continue` unsupported; buffered (not streamed) proxying; `connection_count` not reconciled after a hard kill.
+- Known design limitations carried forward: PostgreSQL read per routing decision and per attempt (no routing cache); circuit state per process and in memory; Redis is a single shared dependency (no cluster) and the limiter identifies clients by TCP peer address; one probe type and one routing strategy for all instances; `Expect: 100-continue` unsupported; buffered (not streamed) proxying; `connection_count` not reconciled after a hard kill.

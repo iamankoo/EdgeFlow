@@ -4,9 +4,9 @@ EdgeFlow is a high-performance **API Gateway, Service Discovery system, and Load
 
 ## Current Status
 
-**Phases 1 to 7 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that discovers registered backend instances (Phase 3) and an **active health checker** that excludes unhealthy instances from the routable view and reintroduces recovered ones (Phase 4), and **four load-balancing strategies** that choose among the routable instances (Phase 5). Phase 6 turns it into a **reverse proxy**: `/proxy/{service}/...` is forwarded to a healthy instance chosen by the routing strategy, and the response is returned to the client. Phase 7 makes that forwarding **reliable**: retries with exponential backoff, a circuit breaker per backend instance, failover to another instance, a total request budget and graceful degradation.
+**Phases 1 to 8 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that discovers registered backend instances (Phase 3) and an **active health checker** that excludes unhealthy instances from the routable view and reintroduces recovered ones (Phase 4), and **four load-balancing strategies** that choose among the routable instances (Phase 5). Phase 6 turns it into a **reverse proxy**: `/proxy/{service}/...` is forwarded to a healthy instance chosen by the routing strategy, and the response is returned to the client. Phase 7 makes that forwarding **reliable**: retries with exponential backoff, a circuit breaker per backend instance, failover to another instance, a total request budget and graceful degradation. Phase 8 adds **Redis**: a response cache and distributed Token Bucket rate limiting (per client address, per API key, per service) whose state is shared by every EdgeFlow instance.
 
-It is **not yet a complete gateway**: there is no caching or rate limiting (Phase 8), no metrics (Phase 9), and no performance has been measured. See [Phases.md](Phases.md).
+It is **not yet a complete gateway**: there are no metrics (Phase 9), and no performance has been measured. See [Phases.md](Phases.md).
 
 ## Implemented
 
@@ -59,9 +59,14 @@ It is **not yet a complete gateway**: there is no caching or rate limiting (Phas
 - Failover: a retry prefers a backend the request has not tried; backends with an open circuit are skipped
 - Graceful degradation: with nothing eligible the client gets a fast `503` (or the last backend answer); the gateway stays up
 
+**Phase 8 - Redis cache and distributed rate limiting** (`redis.*`, `cache.*`, `rate_limit.*`, see [Redis, Cache and Rate Limiting](#redis-response-cache-and-rate-limiting-phase-8))
+- Redis through an own asynchronous client (pool, timeouts, fail-fast window after an outage, stale-connection replacement)
+- Response cache for successful public GET responses with expiry, hit/miss handling (`X-Cache`) and invalidation by writes
+- Token Bucket rate limiting per client address, per API key and per service, atomic and shared through Redis; `429` with `Retry-After`
+- Redis trouble never fails a request: the cache is bypassed, the limiter fails open (default) or closed
+
 ## Planned Capabilities (not yet implemented)
 
-- Redis response caching and Token Bucket rate limiting
 - Prometheus-compatible metrics
 
 ## Architecture Overview
@@ -177,6 +182,23 @@ The service registry is off by default, so this runs without a database. To use 
 | `reliability.circuit_breaker.failure_threshold` | `5` | 1-1000 | consecutive failed requests that open the circuit |
 | `reliability.circuit_breaker.recovery_timeout_ms` | `30000` | 10-3600000 | time open before probe request(s) are let through |
 | `reliability.circuit_breaker.half_open_max_requests` | `1` | 1-100 | probes allowed in flight; that many successes close the circuit |
+| `redis.enabled` | `false` | true/false | turn Redis on; used by `cache` and `rate_limit` |
+| `redis.host` / `redis.port` | `127.0.0.1` / `6379` | name / 1-65535 | Redis address |
+| `redis.password_env` | empty | env var name | NAME of the environment variable holding the Redis password (empty: no AUTH) |
+| `redis.key_prefix` | `edgeflow` | 1-64 of `A-Za-z0-9_-.` | prefix of every key EdgeFlow writes |
+| `redis.connect_timeout_ms` | `1000` | 10-60000 | resolve + connect (and AUTH); while Redis is unreachable one request per `retry_interval_ms` waits this long |
+| `redis.command_timeout_ms` | `250` | 10-60000 | one command, from write to complete reply |
+| `redis.pool_size` / `redis.io_threads` | `4` / `1` | 1-64 | connections to Redis / threads running Redis I/O |
+| `redis.retry_interval_ms` | `1000` | 10-3600000 | after a Redis failure commands fail at once for this long, then one probes |
+| `cache.enabled` | `false` | true/false | response cache; requires `redis.enabled` and `proxy.enabled` |
+| `cache.default_ttl_seconds` / `cache.max_ttl_seconds` | `60` / `3600` | 1-2592000 | lifetime without max-age/s-maxage / upper bound for every lifetime |
+| `cache.max_entry_bytes` | `1048576` | 1-67108864 | a response with a larger body is not stored |
+| `cache.cacheable_statuses` | `[200]` | each 200-599 | statuses that may be stored |
+| `rate_limit.enabled` | `false` | true/false | Token Bucket rate limiting of `/proxy/...`; requires `redis.enabled` and `proxy.enabled` |
+| `rate_limit.on_redis_failure` | `allow` | `allow`, `reject` | when Redis cannot be asked: let the request through, or answer 503 |
+| `rate_limit.ip.enabled` / `.capacity` / `.refill_per_second` | `true` / `100` / `50` | capacity 1-1000000, refill >0-1000000 (fractions allowed) | one bucket per client address |
+| `rate_limit.api_key.enabled` / `.header` / `.capacity` / `.refill_per_second` | `false` / `X-API-Key` / `1000` / `500` | as above | one bucket per API key; requests without the header are not limited by this scope |
+| `rate_limit.service.enabled` / `.capacity` / `.refill_per_second` / `.overrides` | `false` / `5000` / `2500` / none | as above | one bucket per proxied service; `overrides` gives named services their own `capacity` and `refill_per_second` |
 | `shutdown.grace_period_seconds` | `5` | 0-300 | time in-flight requests get to finish on shutdown |
 
 ## Service Registry (Phase 3)
@@ -241,7 +263,7 @@ To try it locally with Docker, use two EdgeFlow containers as throwaway backends
 ```bash
 docker compose up -d --build
 for n in a b; do
-  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase7
+  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase8
   curl -X POST http://127.0.0.1:8080/services/shop/instances -H 'Content-Type: application/json'     -d "{\"instance_id\":\"$n\",\"host\":\"backend-$n\",\"port\":8080}"
 done
 curl http://127.0.0.1:8080/services/shop/routable      # within a few seconds: a and b
@@ -290,7 +312,7 @@ To try it locally with Docker (two throwaway backends, as in Health Checking):
 ```bash
 docker compose up -d --build
 for n in a b; do
-  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase7
+  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase8
   curl -X POST http://127.0.0.1:8080/services/shop/instances -H 'Content-Type: application/json' \
     -d "{\"instance_id\":\"$n\",\"host\":\"backend-$n\",\"port\":8080}"
 done
@@ -318,6 +340,21 @@ for i in $(seq 8); do curl -s -o /dev/null -w '%{http_code} ' http://127.0.0.1:8
 docker logs edgeflow | grep -E 'retrying|circuit breaker'
 ```
 
+## Redis, Response Cache and Rate Limiting (Phase 8)
+
+With `redis.enabled: true` and `cache.enabled` and/or `rate_limit.enabled` (they need `proxy.enabled`; `docker compose` enables all of it and starts `redis:7`) every `/proxy/{service}/...` request first passes the rate limiter, then the cache, and only then reaches the proxy with its retries, circuit breakers and failover. `/health`, `/services/...` and the local endpoints are never limited or cached.
+
+```bash
+docker compose up -d --build
+curl -si http://127.0.0.1:8080/proxy/shop/item | grep -iE '^HTTP|x-cache'     # X-Cache: MISS, then HIT
+for i in $(seq 40); do curl -s -o /dev/null -w '%{http_code} ' -H 'X-API-Key: demo' http://127.0.0.1:8080/proxy/shop/x; done   # 200 x10 then 429
+```
+
+- **Token Bucket.** A bucket holds up to `capacity` tokens and gains `refill_per_second` tokens each second (continuously); every request takes one token from each bucket that applies to it: its **client address** (`rate_limit.ip`), its **API key** (header `rate_limit.api_key.header`; the key is stored in Redis only as a SHA-256 hash) and the **service** it addresses (`rate_limit.service`, with `overrides` for named services). If any bucket is empty the request is answered **`429 Too Many Requests`** with `Retry-After` (whole seconds) and `X-RateLimit-Scope: ip|api_key|service`, **nothing is taken from the other buckets**, and the request never reaches the cache, the proxy or a backend. The buckets live in Redis and are updated by one Lua script that Redis runs atomically with its own clock, so any number of EdgeFlow instances (and threads) share the same limits and cannot both take the last token. Idle buckets expire. The client is identified by its TCP peer address; `X-Forwarded-For` is not trusted.
+- **Response cache.** Used for `GET` requests without a body, `Authorization`, `Cookie`, `Range`, `If-*` headers or `Cache-Control: no-store|no-cache` (`Pragma: no-cache`); everything else bypasses it. Stored: answers from a backend with a status in `cache.cacheable_statuses` (200) and without `Set-Cookie`, `Vary`, `Cache-Control: no-store|no-cache|private` or `max-age=0`, with a body up to `cache.max_entry_bytes`. Lifetime: `s-maxage`, else `max-age`, else `cache.default_ttl_seconds`, never more than `cache.max_ttl_seconds`; Redis removes the entry when it expires. Key: SHA-256 of `GET`, the service and the path + query exactly as sent. A hit is answered from Redis (the backend is not contacted) with `X-Cache: HIT`, `Age` and the `X-Request-Id` of the request being answered; a miss is forwarded and answered with `X-Cache: MISS`. A successful `POST`/`PUT`/`PATCH`/`DELETE` removes the stored entry of the same URL. Not implemented: revalidation (`ETag`/`304`), `Expires`, `Vary`, request coalescing (concurrent misses of one URL each reach a backend), caching of `HEAD`.
+- **When Redis is unavailable** the gateway keeps serving. Starting without Redis only logs a warning. The cache is bypassed (every request goes to a backend). Rate limiting follows `rate_limit.on_redis_failure`: **`allow`** (default, fail open: requests are not limited) or **`reject`** (fail closed: `503 rate limiting is unavailable`). After a failure, Redis commands fail at once for `redis.retry_interval_ms`, then one command probes; an unreachable (not refusing) Redis costs one request per interval up to `redis.connect_timeout_ms`. Recovery is automatic and logged (`redis ... is available again`).
+- **Not in this phase:** metrics (Phase 9), a routing cache, Redis Cluster, per-client identification behind another proxy. Details, key formats and limitations: [architecture.md](architecture.md) section 24.
+
 ## Testing
 
 ```bash
@@ -326,15 +363,15 @@ ctest --test-dir build --output-on-failure
 
 The suite covers configuration, logging, the shutdown coordinator, application lifecycle (including real SIGINT/SIGTERM), the networking engine and the reverse proxy. Network tests are real integration tests: they start the server on an OS-assigned loopback port and talk to it over TCP, covering endpoints, parsing errors, limits, keep-alive and connection reuse, pipelining, idle and request timeouts, timer cancellation, client disconnects and resets, write failure, connection limits, graceful and forced shutdown, and 1/10/50/100 concurrent clients. These are correctness tests, not benchmarks.
 
-The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 58 tests that need a database are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
+The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 58 tests that need a database (and the 53 Phase 8 tests that need Redis, set with `EDGEFLOW_TEST_REDIS_HOST` and optionally `EDGEFLOW_TEST_REDIS_PORT`, some of them together with the database: 111 in all) are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
 
-At the end of Phase 7 the suite has 630 tests: 630 pass with PostgreSQL (GCC Debug/Release and Clang Debug, all `-Werror`), and 572 pass with 58 skipped without it (the Docker image build). The 330 reliability, proxy, pool, async, server, application and router tests passed 10 repeated runs; AddressSanitizer+UBSan and ThreadSanitizer reported nothing on them. The Phase 6 and Phase 7 runtime behaviour (forwarding, retries, backoff, failover, circuit open/half-open/closed, total budget, degradation, shutdown) was observed on real containers with Docker Compose; see `summary.md` for the exact observations. These are correctness results, not performance measurements.
+At the end of Phase 8 the suite has 733 tests: 733 pass with PostgreSQL and Redis (GCC Debug/Release and Clang Debug, all `-Werror`), and 622 pass with 111 skipped without them (the Docker image build). The 446 Phase 8, reliability, proxy, pool, async, server, application and router tests passed 10 repeated runs; AddressSanitizer+UBSan and ThreadSanitizer reported nothing on them. The Phase 6-8 runtime behaviour (forwarding, retries, circuit breaking, caching, rate limiting under concurrent load across two EdgeFlow instances, Redis stopped and restarted, shutdown) was observed on real containers with Docker Compose; see `summary.md` for the exact observations. These are correctness results, not performance measurements.
 
 ## Docker
 
 ```bash
-docker build -t edgeflow:phase7 .            # builds, runs the tests, produces the runtime image
-docker run --rm -p 8080:8080 edgeflow:phase7 # HTTP server only (registry off); stop with Ctrl+C or `docker stop`
+docker build -t edgeflow:phase8 .            # builds, runs the tests, produces the runtime image
+docker run --rm -p 8080:8080 edgeflow:phase8 # HTTP server only (registry off); stop with Ctrl+C or `docker stop`
 docker compose up --build                    # PostgreSQL + EdgeFlow with the registry on; publishes ${EDGEFLOW_HTTP_PORT:-8080}
 docker compose down
 ```
@@ -360,7 +397,7 @@ No benchmarks have been run, and no performance results exist yet. Load-testing 
 | 5 | Load Balancing Engine | Completed |
 | 6 | Reverse Proxy & Request Forwarding | Completed |
 | 7 | Reliability Engineering | Completed |
-| 8 | Redis Cache & Distributed Rate Limiting | Not started |
+| 8 | Redis Cache & Distributed Rate Limiting | Completed |
 | 9 | Observability, Testing & Performance | Not started |
 | 10 | Optimization, Production Hardening & Release | Not started |
 

@@ -23,14 +23,32 @@ services:
       retries: 20
       start_period: 5s
 
+  redis:
+    image: redis:7
+    container_name: edgeflow-redis
+    restart: "no"
+    # Cache and rate-limit state only: nothing is persisted, memory is bounded, and when the
+    # limit is reached the keys closest to expiry go first (every key EdgeFlow writes expires).
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb",
+              "--maxmemory-policy", "volatile-ttl"]
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 2s
+
   edgeflow:
     build:
       context: .
-    image: edgeflow:phase7
+    image: edgeflow:phase8
     container_name: edgeflow
     restart: "no"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       # The configuration names this variable (database.password_env); the password itself

@@ -26,6 +26,14 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U edgeflow -d edgeflow"
           --health-interval 5s --health-timeout 5s --health-retries 10
+      # A real Redis so the cache and rate limiter tests run instead of being skipped.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     strategy:
       fail-fast: false
       matrix:
@@ -61,4 +69,6 @@ jobs:
           EDGEFLOW_TEST_DB_NAME: edgeflow
           EDGEFLOW_TEST_DB_USER: edgeflow
           EDGEFLOW_TEST_DB_PASSWORD: ci_only_password
+          EDGEFLOW_TEST_REDIS_HOST: 127.0.0.1
+          EDGEFLOW_TEST_REDIS_PORT: "6379"
         run: ctest --test-dir build --output-on-failure

@@ -1,6 +1,7 @@
 #include "edgeflow/config/ConfigManager.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <fstream>
 #include <initializer_list>
@@ -576,6 +577,247 @@ void parseReliability(const YAML::Node& root, ReliabilityConfig& out, Errors& er
   }
 }
 
+constexpr long long kMaxRedisPoolSize = 64;
+constexpr long long kMaxBucketCapacity = 1000000;
+constexpr double kMaxRefillPerSecond = 1000000.0;
+constexpr long long kMaxCacheTtlSeconds = 30LL * 24 * 3600;
+constexpr long long kMaxCacheEntryBytes = 64LL * 1024 * 1024;
+constexpr std::size_t kMaxServiceOverrides = 256;
+
+std::optional<double> readDouble(const YAML::Node& section, const std::string& path,
+                                 const std::string& key, Errors& errors) {
+  const YAML::Node value = section[key];
+  if (isUnset(value)) return std::nullopt;
+  if (value.IsScalar()) {
+    try {
+      const double parsed = value.as<double>();
+      if (std::isfinite(parsed)) return parsed;
+    } catch (const YAML::Exception&) {
+      // Reported below with the offending text.
+    }
+  }
+  errors.push_back("'" + path + "." + key + "' must be a number (got '" +
+                   (value.IsScalar() ? value.Scalar() : std::string{"<non-scalar>"}) + "')");
+  return std::nullopt;
+}
+
+bool isHeaderToken(const std::string& name) {
+  if (name.empty() || name.size() > 64) return false;
+  return std::all_of(name.begin(), name.end(), [](unsigned char c) {
+    return std::isalnum(c) != 0 || std::string_view{"!#$%&'*+-.^_`|~"}.find(static_cast<char>(c)) !=
+                                       std::string_view::npos;
+  });
+}
+
+bool isValidKeyPrefix(const std::string& prefix) {
+  if (prefix.empty() || prefix.size() > 64) return false;
+  return std::all_of(prefix.begin(), prefix.end(), [](unsigned char c) {
+    return std::isalnum(c) != 0 || c == '_' || c == '-' || c == '.';
+  });
+}
+
+bool isValidServiceKey(const std::string& name) {
+  if (name.empty() || name.size() > 64) return false;
+  return std::all_of(name.begin(), name.end(), [](unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+  });
+}
+
+void parseRedis(const YAML::Node& root, RedisConfig& out, Errors& errors) {
+  const YAML::Node section = sectionOf(root, "redis", errors);
+  rejectUnknownKeys(section, "redis",
+                    {"enabled", "host", "port", "password_env", "key_prefix", "connect_timeout_ms",
+                     "command_timeout_ms", "pool_size", "io_threads", "retry_interval_ms"},
+                    errors);
+  parseBool(section, "redis", "enabled", out.enabled, errors);
+  if (auto host = readString(section, "redis", "host", errors)) {
+    if (isValidHost(*host)) {
+      out.host = *host;
+    } else {
+      errors.push_back("'redis.host' must be a non-empty string without whitespace");
+    }
+  }
+  if (auto v = readBounded(section, "redis", "port", 1, 65535, errors)) {
+    out.port = static_cast<std::uint16_t>(*v);
+  }
+  if (auto name = readString(section, "redis", "password_env", errors)) {
+    if (isValidEnvName(*name)) {
+      out.password_env = *name;
+    } else {
+      errors.push_back("'redis.password_env' must be the NAME of an environment variable "
+                       "(letters, digits and '_', not starting with a digit), never the password");
+    }
+  }
+  if (auto prefix = readString(section, "redis", "key_prefix", errors)) {
+    if (isValidKeyPrefix(*prefix)) {
+      out.key_prefix = *prefix;
+    } else {
+      errors.push_back("'redis.key_prefix' must be 1-64 characters from letters, digits, '_', '-' "
+                       "and '.'");
+    }
+  }
+  if (auto v = readBounded(section, "redis", "connect_timeout_ms", kMinTimeoutMs,
+                           kMaxProxyConnectTimeoutMs, errors)) {
+    out.connect_timeout = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(section, "redis", "command_timeout_ms", kMinTimeoutMs,
+                           kMaxProxyConnectTimeoutMs, errors)) {
+    out.command_timeout = std::chrono::milliseconds{*v};
+  }
+  if (auto v = readBounded(section, "redis", "pool_size", 1, kMaxRedisPoolSize, errors)) {
+    out.pool_size = static_cast<unsigned>(*v);
+  }
+  if (auto v = readBounded(section, "redis", "io_threads", 1, kMaxWorkerThreads, errors)) {
+    out.io_threads = static_cast<unsigned>(*v);
+  }
+  if (auto v = readBounded(section, "redis", "retry_interval_ms", kMinTimeoutMs, kMaxIntervalMs,
+                           errors)) {
+    out.retry_interval = std::chrono::milliseconds{*v};
+  }
+}
+
+void parseCache(const YAML::Node& root, CacheConfig& out, Errors& errors) {
+  const YAML::Node section = sectionOf(root, "cache", errors);
+  rejectUnknownKeys(section, "cache",
+                    {"enabled", "default_ttl_seconds", "max_ttl_seconds", "max_entry_bytes",
+                     "cacheable_statuses"},
+                    errors);
+  parseBool(section, "cache", "enabled", out.enabled, errors);
+  if (auto v = readBounded(section, "cache", "default_ttl_seconds", 1, kMaxCacheTtlSeconds,
+                           errors)) {
+    out.default_ttl = std::chrono::seconds{*v};
+  }
+  if (auto v = readBounded(section, "cache", "max_ttl_seconds", 1, kMaxCacheTtlSeconds, errors)) {
+    out.max_ttl = std::chrono::seconds{*v};
+  }
+  if (auto v = readBounded(section, "cache", "max_entry_bytes", 1, kMaxCacheEntryBytes, errors)) {
+    out.max_entry_bytes = static_cast<std::size_t>(*v);
+  }
+  if (out.default_ttl > out.max_ttl) {
+    errors.push_back("'cache.default_ttl_seconds' (" + std::to_string(out.default_ttl.count()) +
+                     ") must not exceed 'cache.max_ttl_seconds' (" +
+                     std::to_string(out.max_ttl.count()) + ")");
+  }
+  if (auto statuses = readScalarList(section, "cache", "cacheable_statuses", errors)) {
+    std::vector<unsigned> parsed;
+    for (const auto& text : *statuses) {
+      long long code = 0;
+      try {
+        std::size_t used = 0;
+        code = std::stoll(text, &used);
+        if (used != text.size()) throw std::invalid_argument("trailing characters");
+      } catch (const std::exception&) {
+        errors.push_back("'cache.cacheable_statuses' entries must be integers (got '" + text + "')");
+        continue;
+      }
+      if (code < 200 || code > 599) {
+        errors.push_back("'cache.cacheable_statuses' entries must be between 200 and 599 (got " +
+                         std::to_string(code) + ")");
+        continue;
+      }
+      if (std::find(parsed.begin(), parsed.end(), static_cast<unsigned>(code)) != parsed.end()) {
+        errors.push_back("'cache.cacheable_statuses' lists " + std::to_string(code) + " twice");
+        continue;
+      }
+      parsed.push_back(static_cast<unsigned>(code));
+    }
+    if (parsed.empty() && statuses->empty()) {
+      errors.push_back("'cache.cacheable_statuses' must not be empty (use cache.enabled: false)");
+    }
+    out.cacheable_statuses = std::move(parsed);
+  }
+}
+
+// capacity + refill_per_second of one bucket, under `path`.
+void parseBucketLimits(const YAML::Node& node, const std::string& path, TokenBucketConfig& out,
+                       Errors& errors) {
+  if (auto v = readBounded(node, path, "capacity", 1, kMaxBucketCapacity, errors)) {
+    out.capacity = static_cast<unsigned>(*v);
+  }
+  if (auto v = readDouble(node, path, "refill_per_second", errors)) {
+    if (*v <= 0.0 || *v > kMaxRefillPerSecond) {
+      errors.push_back("'" + path + ".refill_per_second' must be greater than 0 and at most " +
+                       std::to_string(static_cast<long long>(kMaxRefillPerSecond)) + " (got " +
+                       std::to_string(*v) + ")");
+    } else {
+      out.refill_per_second = *v;
+    }
+  }
+}
+
+void parseRateLimit(const YAML::Node& root, RateLimitConfig& out, Errors& errors) {
+  const YAML::Node section = sectionOf(root, "rate_limit", errors);
+  rejectUnknownKeys(section, "rate_limit", {"enabled", "on_redis_failure", "ip", "api_key", "service"},
+                    errors);
+  parseBool(section, "rate_limit", "enabled", out.enabled, errors);
+  if (auto policy = readString(section, "rate_limit", "on_redis_failure", errors)) {
+    if (*policy == "allow") {
+      out.on_redis_failure = RateLimitFailurePolicy::Allow;
+    } else if (*policy == "reject") {
+      out.on_redis_failure = RateLimitFailurePolicy::Reject;
+    } else {
+      errors.push_back("'rate_limit.on_redis_failure' must be allow or reject (got '" + *policy +
+                       "')");
+    }
+  }
+
+  const YAML::Node ip = sectionOf(section, "ip", errors);
+  rejectUnknownKeys(ip, "rate_limit.ip", {"enabled", "capacity", "refill_per_second"}, errors);
+  parseBool(ip, "rate_limit.ip", "enabled", out.ip.enabled, errors);
+  parseBucketLimits(ip, "rate_limit.ip", out.ip, errors);
+
+  const YAML::Node key = sectionOf(section, "api_key", errors);
+  rejectUnknownKeys(key, "rate_limit.api_key", {"enabled", "header", "capacity", "refill_per_second"},
+                    errors);
+  parseBool(key, "rate_limit.api_key", "enabled", out.api_key.enabled, errors);
+  if (auto header = readString(key, "rate_limit.api_key", "header", errors)) {
+    if (isHeaderToken(*header)) {
+      out.api_key.header = *header;
+    } else {
+      errors.push_back("'rate_limit.api_key.header' must be a valid HTTP header name");
+    }
+  }
+  parseBucketLimits(key, "rate_limit.api_key", out.api_key, errors);
+
+  const YAML::Node service = sectionOf(section, "service", errors);
+  rejectUnknownKeys(service, "rate_limit.service",
+                    {"enabled", "capacity", "refill_per_second", "overrides"}, errors);
+  parseBool(service, "rate_limit.service", "enabled", out.service.enabled, errors);
+  parseBucketLimits(service, "rate_limit.service", out.service, errors);
+  const YAML::Node overrides = service["overrides"];
+  if (!isUnset(overrides)) {
+    if (!overrides.IsMap()) {
+      errors.push_back("'rate_limit.service.overrides' must be a mapping of service name to limits");
+    } else if (overrides.size() > kMaxServiceOverrides) {
+      errors.push_back("'rate_limit.service.overrides' has too many entries (limit " +
+                       std::to_string(kMaxServiceOverrides) + ")");
+    } else {
+      for (const auto& entry : overrides) {
+        if (!entry.first.IsScalar()) {
+          errors.push_back("'rate_limit.service.overrides' contains a non-scalar key");
+          continue;
+        }
+        const std::string name = entry.first.Scalar();
+        const std::string path = "rate_limit.service.overrides." + name;
+        if (!isValidServiceKey(name)) {
+          errors.push_back("'" + path + "': a service name is 1-64 characters from a-z, 0-9, '.', "
+                           "'_' and '-'");
+          continue;
+        }
+        if (!entry.second.IsMap()) {
+          errors.push_back("'" + path + "' must be a mapping with capacity and refill_per_second");
+          continue;
+        }
+        rejectUnknownKeys(entry.second, path, {"capacity", "refill_per_second"}, errors);
+        TokenBucketConfig bucket = out.service;  // unset keys fall back to the service defaults
+        bucket.enabled = true;
+        parseBucketLimits(entry.second, path, bucket, errors);
+        out.service.overrides[name] = bucket;
+      }
+    }
+  }
+}
+
 void parseShutdown(const YAML::Node& root, ShutdownConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "shutdown", errors);
   rejectUnknownKeys(section, "shutdown", {"grace_period_seconds"}, errors);
@@ -647,7 +889,7 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
   Errors errors;
   rejectUnknownKeys(root, "",
                     {"application", "server", "database", "health_check", "routing", "proxy",
-                     "reliability", "shutdown"},
+                     "reliability", "redis", "cache", "rate_limit", "shutdown"},
                     errors);
   parseApplication(root, parsed.application, errors);
   parseServer(root, parsed.server, errors);
@@ -667,6 +909,23 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
   if (parsed.reliability.enabled && !parsed.proxy.enabled) {
     errors.push_back("'reliability.enabled' requires 'proxy.enabled': reliability wraps the "
                      "upstream attempts of the reverse proxy");
+  }
+  parseRedis(root, parsed.redis, errors);
+  parseCache(root, parsed.cache, errors);
+  if (parsed.cache.enabled && !parsed.redis.enabled) {
+    errors.push_back("'cache.enabled' requires 'redis.enabled': cached responses live in Redis");
+  }
+  if (parsed.cache.enabled && !parsed.proxy.enabled) {
+    errors.push_back("'cache.enabled' requires 'proxy.enabled': only proxied responses are cached");
+  }
+  parseRateLimit(root, parsed.rate_limit, errors);
+  if (parsed.rate_limit.enabled && !parsed.redis.enabled) {
+    errors.push_back("'rate_limit.enabled' requires 'redis.enabled': the token buckets live in "
+                     "Redis so that every EdgeFlow instance shares them");
+  }
+  if (parsed.rate_limit.enabled && !parsed.proxy.enabled) {
+    errors.push_back("'rate_limit.enabled' requires 'proxy.enabled': only proxied requests are "
+                     "rate limited");
   }
   parseShutdown(root, parsed.shutdown, errors);
 
@@ -703,6 +962,14 @@ std::string_view toString(RoutingStrategy strategy) noexcept {
     case RoutingStrategy::ConsistentHashing: return "consistent_hashing";
   }
   return "round_robin";
+}
+
+std::string_view toString(RateLimitFailurePolicy policy) noexcept {
+  switch (policy) {
+    case RateLimitFailurePolicy::Allow: return "allow";
+    case RateLimitFailurePolicy::Reject: return "reject";
+  }
+  return "allow";
 }
 
 std::string_view toString(LogLevel level) noexcept {

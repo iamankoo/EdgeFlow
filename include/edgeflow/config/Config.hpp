@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -144,6 +145,83 @@ struct ReliabilityConfig {
   CircuitBreakerConfig circuit_breaker;
 };
 
+// Phase 8: Redis, the shared store behind the response cache and the distributed rate limiter.
+// Optional: with it off, EdgeFlow behaves exactly as in Phase 7.
+struct RedisConfig {
+  bool enabled{false};
+  std::string host{"127.0.0.1"};
+  std::uint16_t port{6379};
+  // NAME of the environment variable holding the Redis password (never the password itself).
+  // Empty: no AUTH.
+  std::string password_env;
+  // Namespace of every key EdgeFlow writes ("<prefix>:cache:...", "<prefix>:rl:...").
+  std::string key_prefix{"edgeflow"};
+  // Bound for resolving and connecting (and for the AUTH exchange).
+  std::chrono::milliseconds connect_timeout{1000};
+  // Bound for one command from the moment it is written until its reply is complete.
+  std::chrono::milliseconds command_timeout{250};
+  unsigned pool_size{4};   // connections to Redis; each runs one command at a time
+  unsigned io_threads{1};  // threads running Redis I/O (separate from every other pool)
+  // After a connection failure or timeout, commands fail at once (without touching the
+  // network) for this long, then one command is let through to find out whether Redis is back.
+  std::chrono::milliseconds retry_interval{1000};
+};
+
+// Response cache (Phase 8): stores successful, public GET responses of proxied requests in
+// Redis. Requires `redis.enabled` and `proxy.enabled`.
+struct CacheConfig {
+  bool enabled{false};
+  // Lifetime of an entry whose response carries no max-age / s-maxage.
+  std::chrono::seconds default_ttl{60};
+  // Upper bound for every lifetime, including the one the backend asks for.
+  std::chrono::seconds max_ttl{3600};
+  // A response with a larger body is not stored.
+  std::size_t max_entry_bytes{1024 * 1024};
+  // Only responses with one of these statuses are stored.
+  std::vector<unsigned> cacheable_statuses{200};
+};
+
+// One Token Bucket: it holds up to `capacity` tokens, gains `refill_per_second` tokens every
+// second, and every request takes one token.
+struct TokenBucketConfig {
+  bool enabled{true};
+  unsigned capacity{100};
+  double refill_per_second{50.0};
+};
+
+struct ApiKeyLimitConfig : TokenBucketConfig {
+  ApiKeyLimitConfig() {
+    enabled = false;
+    capacity = 1000;
+    refill_per_second = 500.0;
+  }
+  // The request header carrying the API key. A request without it is not subject to this scope.
+  std::string header{"X-API-Key"};
+};
+
+struct ServiceLimitConfig : TokenBucketConfig {
+  ServiceLimitConfig() {
+    enabled = false;
+    capacity = 5000;
+    refill_per_second = 2500.0;
+  }
+  // Own limits for named services (the bucket of that service, shared by all its clients).
+  std::map<std::string, TokenBucketConfig> overrides;
+};
+
+enum class RateLimitFailurePolicy { Allow, Reject };
+
+// Distributed rate limiting (Phase 8): Token Buckets kept in Redis so that every EdgeFlow
+// instance draws from the same bucket. Requires `redis.enabled` and `proxy.enabled`.
+struct RateLimitConfig {
+  bool enabled{false};
+  // What a request gets when Redis cannot be asked: Allow (fail open) or Reject (fail closed, 503).
+  RateLimitFailurePolicy on_redis_failure{RateLimitFailurePolicy::Allow};
+  TokenBucketConfig ip;
+  ApiKeyLimitConfig api_key;
+  ServiceLimitConfig service;
+};
+
 struct ShutdownConfig {
   std::chrono::seconds grace_period{5};
 };
@@ -156,6 +234,9 @@ struct Config {
   RoutingConfig routing;
   ProxyConfig proxy;
   ReliabilityConfig reliability;
+  RedisConfig redis;
+  CacheConfig cache;
+  RateLimitConfig rate_limit;
   ShutdownConfig shutdown;
 };
 
@@ -163,5 +244,6 @@ struct Config {
 [[nodiscard]] std::string_view toString(LogLevel level) noexcept;
 [[nodiscard]] std::string_view toString(HealthCheckType type) noexcept;
 [[nodiscard]] std::string_view toString(RoutingStrategy strategy) noexcept;
+[[nodiscard]] std::string_view toString(RateLimitFailurePolicy policy) noexcept;
 
 }  // namespace edgeflow::config

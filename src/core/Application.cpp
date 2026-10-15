@@ -6,8 +6,10 @@
 #include <iostream>
 #include <utility>
 
+#include "edgeflow/cache/ResponseCache.hpp"
 #include "edgeflow/discovery/PostgresServiceRegistry.hpp"
 #include "edgeflow/network/RegistryRequestHandler.hpp"
+#include "edgeflow/ratelimit/RateLimiter.hpp"
 #include "edgeflow/storage/Migrator.hpp"
 #include "edgeflow/storage/Postgres.hpp"
 
@@ -126,6 +128,44 @@ bool Application::initializeRegistry(std::shared_ptr<network::RequestHandler>& h
                 db.pool_size, router_->strategy());
 
   if (config_.proxy.enabled) {
+    // Redis (Phase 8) is registered for shutdown FIRST, so shutting down in reverse it stops
+    // LAST: the server, the health checker and the proxy have finished with every request
+    // (and every Redis callback those requests were waiting for) by then.
+    const bool policy_wanted = config_.cache.enabled || config_.rate_limit.enabled;
+    if (config_.redis.enabled && policy_wanted) {
+      std::string password;
+      if (!config_.redis.password_env.empty()) {
+        if (const char* value = std::getenv(config_.redis.password_env.c_str()); value != nullptr) {
+          password = value;
+        } else {
+          logger_->warn("environment variable {} is not set; connecting to Redis without a "
+                        "password", config_.redis.password_env);
+        }
+      }
+      redis_ = redis::RedisClient::create(redis::RedisOptions::fromConfig(config_.redis, std::move(password)),
+                                          logger_);
+      shutdown_.registerComponent("redis", [this] { redis_->stop(); });
+      // Redis is an optional helper: if it is down now the gateway still starts (the cache is
+      // bypassed, the rate limiter follows rate_limit.on_redis_failure) and picks Redis up
+      // as soon as it answers.
+      const auto pong = redis_->commandSync({"PING"});
+      if (pong.ok() && !pong.reply->isError()) {
+        logger_->info("redis ready ({}:{}, {} connection(s), command timeout {}ms)", config_.redis.host,
+                      config_.redis.port, config_.redis.pool_size,
+                      config_.redis.command_timeout.count());
+      } else {
+        logger_->warn("redis {}:{} does not answer ({}); starting anyway: the cache is bypassed and "
+                      "rate limiting {} until it does",
+                      config_.redis.host, config_.redis.port,
+                      pong.ok() ? pong.reply->text : pong.error->message,
+                      config_.rate_limit.on_redis_failure == config::RateLimitFailurePolicy::Allow
+                          ? "lets requests through"
+                          : "refuses requests");
+      }
+    } else if (policy_wanted) {
+      logger_->warn("cache or rate limiting is enabled but redis.enabled is false: ignoring both");
+    }
+
     // Outermost handler: /proxy/... is forwarded, everything else reaches the registry API
     // and the local endpoints exactly as before. Registered for shutdown before the HTTP
     // server and the health checker, so (shutting down in reverse) it stops after both: the
@@ -140,6 +180,22 @@ bool Application::initializeRegistry(std::shared_ptr<network::RequestHandler>& h
                                                    std::move(rel));
     shutdown_.registerComponent("reverse-proxy", [this] { proxy_->stop(); });
     handler = proxy_;
+
+    if (redis_) {
+      std::shared_ptr<ratelimit::RateLimiter> limiter;
+      std::shared_ptr<cache::ResponseCache> response_cache;
+      if (config_.rate_limit.enabled) {
+        limiter = std::make_shared<ratelimit::RateLimiter>(redis_, config_.rate_limit,
+                                                           config_.redis.key_prefix, logger_);
+      }
+      if (config_.cache.enabled) {
+        response_cache = std::make_shared<cache::ResponseCache>(redis_, config_.cache,
+                                                                config_.redis.key_prefix, logger_);
+      }
+      policy_ = std::make_shared<gateway::PolicyHandler>(handler, std::move(limiter),
+                                                         std::move(response_cache), logger_);
+      handler = policy_;
+    }
   }
   return true;
 }

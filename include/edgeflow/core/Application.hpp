@@ -11,10 +11,12 @@
 #include "edgeflow/core/SignalHandler.hpp"
 #include "edgeflow/discovery/HealthChecker.hpp"
 #include "edgeflow/discovery/ServiceRegistry.hpp"
+#include "edgeflow/gateway/PolicyHandler.hpp"
 #include "edgeflow/logging/Logger.hpp"
 #include "edgeflow/network/HttpServer.hpp"
 #include "edgeflow/network/RequestHandler.hpp"
 #include "edgeflow/proxy/ProxyHandler.hpp"
+#include "edgeflow/redis/RedisClient.hpp"
 #include "edgeflow/routing/Router.hpp"
 
 namespace edgeflow::core {
@@ -71,6 +73,11 @@ class Application {
   [[nodiscard]] std::shared_ptr<routing::Router> router() const noexcept { return router_; }
   // The reverse proxy (null unless `proxy.enabled` and no custom request handler).
   [[nodiscard]] proxy::ProxyHandler* proxyHandler() const noexcept { return proxy_.get(); }
+  // The Redis client behind the cache and the rate limiter (null unless `redis.enabled` and
+  // `cache.enabled` or `rate_limit.enabled`, with the proxy on).
+  [[nodiscard]] redis::RedisClient* redisClient() const noexcept { return redis_.get(); }
+  // The rate limit / cache layer in front of the proxy (null when neither is on).
+  [[nodiscard]] gateway::PolicyHandler* policyHandler() const noexcept { return policy_.get(); }
   // The running health checker (null unless `health_check.enabled`).
   [[nodiscard]] discovery::HealthChecker* healthChecker() const noexcept {
     return health_checker_.get();
@@ -88,6 +95,8 @@ class Application {
   std::shared_ptr<discovery::ServiceRegistry> registry_;  // set when database.enabled
   std::shared_ptr<routing::Router> router_;               // set when database.enabled
   std::shared_ptr<proxy::ProxyHandler> proxy_;            // set when proxy.enabled
+  std::shared_ptr<redis::RedisClient> redis_;             // set when redis + cache/rate limit are on
+  std::shared_ptr<gateway::PolicyHandler> policy_;        // set when cache/rate limit are on
   std::unique_ptr<discovery::HealthChecker> health_checker_;
   std::unique_ptr<network::HttpServer> http_server_;
 

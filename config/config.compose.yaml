@@ -88,5 +88,50 @@ reliability:
     recovery_timeout_ms: 6000  # 10..3600000; time open before probe request(s) are let through
     half_open_max_requests: 1  # 1..100; probes allowed in flight; that many successes close it
 
+redis:
+  # Phase 8: the Redis container of docker-compose.yml.
+  enabled: true
+  host: redis
+  port: 6379
+  password_env: ""
+  key_prefix: edgeflow
+  # Short: while Redis is unreachable (not refusing), one request per retry_interval_ms pays this
+  # much before the gateway goes on without Redis.
+  connect_timeout_ms: 250
+  command_timeout_ms: 250
+  pool_size: 4
+  io_threads: 1
+  retry_interval_ms: 1000
+
+cache:
+  # Short lifetimes so expiry is visible in seconds.
+  enabled: true
+  default_ttl_seconds: 10
+  max_ttl_seconds: 300
+  max_entry_bytes: 1048576
+  cacheable_statuses: [200]
+
+rate_limit:
+  # Small buckets so the limits are visible in a demonstration.
+  enabled: true
+  on_redis_failure: allow
+  ip:
+    enabled: true
+    capacity: 30
+    refill_per_second: 10
+  api_key:
+    enabled: true
+    header: X-API-Key
+    capacity: 10
+    refill_per_second: 2
+  service:
+    enabled: true
+    capacity: 200
+    refill_per_second: 100
+    overrides:
+      strict:
+        capacity: 5
+        refill_per_second: 1
+
 shutdown:
   grace_period_seconds: 5    # 0..300; in-flight requests may finish within this time

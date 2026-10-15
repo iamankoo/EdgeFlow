@@ -10,7 +10,7 @@ The stack below is **locked**. No technology may be substituted or added without
 | Networking | Boost.Asio | Phase 2 implemented | Mature asynchronous I/O and executor model for TCP; the basis of the concurrency design. |
 | HTTP | Boost.Beast (HTTP/1.1 initially) | Phase 2 implemented | HTTP parsing and serialization built on Asio, avoiding a hand-rolled parser. |
 | Persistence | PostgreSQL | Phase 3 implemented | Durable, transactional source of truth for service metadata. |
-| Shared state / cache | Redis | Planned (Phase 8) | Low-latency shared store for response caching and distributed rate-limit state. |
+| Shared state / cache | Redis | Active (Phase 8) | Low-latency shared store for response caching and distributed rate-limit state. |
 | Containers | Docker, Docker Compose | Phase 1 active | Reproducible local deployment of the gateway, backends, PostgreSQL and Redis. |
 | Unit testing | GoogleTest | Phase 1 active (Phase 2 adds real-socket integration tests) | Standard C++ test framework with CMake/CTest integration. |
 | Benchmarking | Google Benchmark | Planned (Phase 9) | Micro-benchmarks for hot paths such as routing and rate limiting. |

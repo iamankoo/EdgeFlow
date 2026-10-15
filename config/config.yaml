@@ -87,5 +87,56 @@ reliability:
     recovery_timeout_ms: 30000 # 10..3600000; time open before probe request(s) are let through
     half_open_max_requests: 1  # 1..100; probes allowed in flight; that many successes close it
 
+redis:
+  # Phase 8: Redis holds the response cache and the shared Token Buckets. Off by default;
+  # needs cache.enabled or rate_limit.enabled to be used. Redis is an optional helper: if it
+  # is unreachable the gateway keeps serving (the cache is bypassed, rate limiting follows
+  # rate_limit.on_redis_failure).
+  enabled: false
+  host: 127.0.0.1
+  port: 6379              # 1..65535
+  password_env: ""        # NAME of the environment variable holding the Redis password; empty = no AUTH
+  key_prefix: edgeflow    # prefix of every key EdgeFlow writes; use another one per deployment sharing a Redis
+  connect_timeout_ms: 1000  # 10..60000; resolve + connect (and AUTH). While Redis is unreachable, one request per
+                            # retry_interval_ms waits up to this long before the gateway goes on without Redis
+  command_timeout_ms: 250   # 10..60000; one command, from write to complete reply
+  pool_size: 4            # 1..64; connections to Redis
+  io_threads: 1           # 1..64; threads running Redis I/O
+  retry_interval_ms: 1000 # 10..3600000; after a Redis failure commands fail at once for this long, then one probes
+
+cache:
+  # Phase 8 response cache: successful public GET responses of proxied requests, stored in
+  # Redis. Needs redis.enabled and proxy.enabled. Never cached: requests with Authorization,
+  # Cookie, Range or If-* headers, Cache-Control no-store/no-cache, or a body; responses with
+  # Set-Cookie, Vary, Cache-Control no-store/no-cache/private, max-age=0, or a status that
+  # is not listed below.
+  enabled: false
+  default_ttl_seconds: 60    # 1..2592000; lifetime when the response has no max-age / s-maxage
+  max_ttl_seconds: 3600      # 1..2592000; upper bound for every lifetime (>= default_ttl_seconds)
+  max_entry_bytes: 1048576   # 1..67108864; a response with a larger body is not stored
+  cacheable_statuses: [200]  # each 200..599
+
+rate_limit:
+  # Phase 8 distributed rate limiting: Token Buckets kept in Redis, shared by every EdgeFlow
+  # instance. A request takes one token from EACH enabled bucket that applies to it, or is
+  # answered 429 with Retry-After (nothing is taken when any bucket is empty). Only /proxy/...
+  # requests are limited. Needs redis.enabled and proxy.enabled.
+  enabled: false
+  on_redis_failure: allow    # allow (fail open) | reject (fail closed: 503); used when Redis cannot be asked
+  ip:                        # one bucket per client address
+    enabled: true
+    capacity: 100            # 1..1000000; tokens a full bucket holds (the burst size)
+    refill_per_second: 50    # >0..1000000; tokens added per second (fractions allowed)
+  api_key:                   # one bucket per API key; requests without the header are not limited by this scope
+    enabled: false
+    header: X-API-Key
+    capacity: 1000
+    refill_per_second: 500
+  service:                   # one bucket per proxied service, shared by all its clients
+    enabled: false
+    capacity: 5000
+    refill_per_second: 2500
+    overrides: {}            # e.g. { billing: { capacity: 100, refill_per_second: 50 } }
+
 shutdown:
   grace_period_seconds: 5    # 0..300; in-flight requests may finish within this time

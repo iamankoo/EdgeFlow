@@ -1,6 +1,8 @@
 include(GoogleTest)
 
 add_executable(edgeflow_tests
+  cache/ResponseCacheTest.cpp
+  config/ConfigManagerRedisTest.cpp
   config/ConfigManagerTest.cpp
   core/ApplicationTest.cpp
   core/CommandLineTest.cpp
@@ -12,6 +14,8 @@ add_executable(edgeflow_tests
   discovery/PostgresServiceRegistryTest.cpp
   discovery/ProberTest.cpp
   discovery/ValidationTest.cpp
+  gateway/PolicyHandlerTest.cpp
+  gateway/PolicyPostgresTest.cpp
   logging/LoggerTest.cpp
   network/AsyncHandlerTest.cpp
   network/HealthProbeTest.cpp
@@ -23,6 +27,9 @@ add_executable(edgeflow_tests
   proxy/ProxyHeadersTest.cpp
   proxy/ProxyPostgresTest.cpp
   proxy/UpstreamPoolTest.cpp
+  ratelimit/RateLimiterTest.cpp
+  redis/RedisClientTest.cpp
+  redis/RespTest.cpp
   reliability/CircuitBreakerTest.cpp
   reliability/ReliabilityPostgresTest.cpp
   reliability/ReliabilityProxyTest.cpp
@@ -35,7 +42,8 @@ add_executable(edgeflow_tests
 target_include_directories(edgeflow_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(edgeflow_tests PRIVATE
   EDGEFLOW_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
-  EDGEFLOW_DEFAULT_CONFIG="${PROJECT_SOURCE_DIR}/config/config.yaml")
+  EDGEFLOW_DEFAULT_CONFIG="${PROJECT_SOURCE_DIR}/config/config.yaml"
+  EDGEFLOW_COMPOSE_CONFIG="${PROJECT_SOURCE_DIR}/config/config.compose.yaml")
 target_link_libraries(edgeflow_tests PRIVATE edgeflow::core nlohmann_json::nlohmann_json GTest::gtest_main)
 edgeflow_enable_warnings(edgeflow_tests)
 
