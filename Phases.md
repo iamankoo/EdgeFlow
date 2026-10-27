@@ -1,6 +1,6 @@
 # EdgeFlow — Development Phases
 
-**Current Phase: Phase 10 completed — the roadmap is finished**
+**Current Phase: Phase 10 completed — the roadmap is finished and the project is closed**
 
 This document is the authoritative roadmap. Phases must not be skipped. A phase begins only after the previous phase has met its exit condition. Later-phase functionality must not be implemented early unless strictly required as a dependency and clearly documented.
 

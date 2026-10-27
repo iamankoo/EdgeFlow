@@ -9,6 +9,10 @@ EdgeFlow is an **API gateway, service-discovery system and load balancer written
 | **How fast, and how that was found** | [docs/PERFORMANCE.md](docs/PERFORMANCE.md): profiles, three measured optimizations (the uncached proxied path 1.9K -> 11.6K requests/s), ten-backend benchmark, failure injection |
 | **How safe** | [docs/SECURITY.md](docs/SECURITY.md): the hardening review, what was changed, what is deliberately left to the operator |
 
+> **Project status: FINISHED.** All ten roadmap phases are complete and the project is closed at this commit. It is a
+> reproducible, documented, tested, benchmarked, Dockerized systems project; further work would be new scope
+> (see the limitations and follow-ups in [summary.md](summary.md)).
+
 ## What problem does it solve?
 
 Once a system is more than one server, clients should not need to know where each service runs, which copies are alive, or what to do when one is not. Without a gateway every client (or every service) re-implements discovery, retry, timeouts and rate limiting, each slightly differently, and an overloaded or dead instance takes its callers down with it. EdgeFlow puts that in one place:
@@ -65,6 +69,27 @@ Each step prints the command it runs and the real output; [docs/DEMO.md](docs/DE
 | Gateway process under load | 1.6-1.8 cores, about 16 MB resident memory |
 
 These are measurements of this code on one machine, not capacity claims; every number, its method and its caveats are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md), and the raw files are in `bench/results/`. The roadmap's targets are stated against them there (met: 10 instances, 100K+ requests, availability, throughput and p95 for three of four strategies; not met: `least_connections` throughput and p95).
+
+### Final results at a glance (all measured; one 4-vCPU shared machine)
+
+| what | result |
+|---|---|
+| Phases completed | 10 of 10 |
+| Automated tests | **828** (GCC Debug, GCC Release, Clang 18 with `-Werror`: 828/828 with PostgreSQL and Redis, run serially; in the Docker image build without them 703 pass, 125 skipped, 0 failed) |
+| Sanitizers | AddressSanitizer + UndefinedBehaviorSanitizer and ThreadSanitizer: 541/541 concurrency-relevant tests, no reports |
+| Repeat runs | reliability, health and prober suites 100x and the formerly flaky retried-POST test 500x, 0 failures |
+| Runtime checks on a real gateway | 29/29 malformed-input and resource-abuse checks, 18/18 dependency-failure and graceful-shutdown checks |
+| Requests served in the ten-backend strategy benchmark | **762,591 requests in 135.1 s of load** (round robin 203,484 in 20.0 s, weighted 208,486 in 20.0 s, consistent hashing 214,899 in 20.0 s, least connections 135,722 in 75.1 s), 0 non-2xx answers, 0 socket errors |
+| Requests served in the two failure-injection runs (backends killed, hung, erroring, added and removed under load) | **1,180,774 requests in 132.2 s** (546,773 with a 10 s upstream timeout, 634,001 with 1 s), **0 failed**, availability 100.000 % |
+| Uncached proxied path, Phase 9 -> Phase 10 | 1,935 -> **11,637 requests/s** (6.0x), p50 32.35 -> 5.36 ms, p99 45.98 -> 9.44 ms |
+| Peak throughput, ten backends | 10,722 requests/s (consistent hashing); round robin 10,167, weighted 10,417; least connections 1,808 |
+| Best p95 | 8.71 ms (weighted), 8.87 ms (round robin); worst 45.80 ms (least connections) |
+| Gateway footprint under load | 1.6-1.8 CPU cores, about 16 MB resident memory, 17 threads |
+| Image | `edgeflow:phase10`, 127 MB, non-root, read-only root filesystem, all capabilities dropped |
+| Known misses | `least_connections` is below the ~10K requests/s and p95 ~20 ms targets (its counter lives in PostgreSQL); no TLS; `/metrics` unauthenticated; remote GitHub Actions run not confirmed |
+
+These counts are totals of the committed benchmark runs in `bench/results/phase10-final-benchmark/`; they come from
+load generators on the same machine as the gateway and are not a capacity claim or an uptime figure.
 
 ## Implemented
 

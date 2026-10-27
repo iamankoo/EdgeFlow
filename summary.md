@@ -7,6 +7,12 @@
 
 ---
 
+## PROJECT STATUS: FINISHED AND LOCKED
+
+EdgeFlow is finished. All ten phases are complete; the owner closed the project after Phase 10 (2026-10-27) with a final documentation commit (README results at a glance, this file). No further work is planned or in progress. Do not start new work, reopen a phase or rewrite history without the owner's explicit instruction. Totals served by the committed benchmark runs: 762,591 requests in the four strategy runs and 1,180,774 requests in the two failure-injection runs (0 failed); details in the README and `docs/PERFORMANCE.md`.
+
+---
+
 ## 0. RESUME POINT — Phase 10 complete, roadmap finished
 
 All ten phases are done. Any further work is new scope and needs the owner's instructions. Before anything else: read this file, then `Phases.md`, run `git log --oneline -8` / `git status`, and confirm `HEAD == origin/main` with a clean tree. The documents to read for the finished project are `README.md`, `docs/FLOWCHART.md`, `docs/PERFORMANCE.md`, `docs/SECURITY.md` and `docs/DEMO.md`.
