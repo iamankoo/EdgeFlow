@@ -123,6 +123,14 @@ class ProxyHandler final : public network::RequestHandler {
   const config::ProxyConfig config_;
   const std::shared_ptr<reliability::ReliabilityManager> reliability_;
   const std::shared_ptr<logging::Logger> logger_;
+  // True when an attempt may start on the calling thread: it makes no registry write (no connection counting)
+  // and routing can be answered from a kept snapshot. The attempt still falls back to the lookup pool
+  // whenever the snapshot is not fresh.
+  [[nodiscard]] bool nonBlockingAttempts() const noexcept { return !count_connections_ && router_->keepsSnapshots(); }
+
+  // Whether this proxy keeps connection_count in the registry (config.connection_counting).
+  // Declared before lookup_pool_ only for the initialisation order of the constructor.
+  const bool count_connections_;
 
   // Destruction order matters: the client and pool must outlive nothing that uses them, the
   // pool must be destroyed before the io_context its sockets belong to.

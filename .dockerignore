@@ -8,3 +8,6 @@ Testing
 .env
 .env.*
 *.md
+bench/results
+demo
+docs

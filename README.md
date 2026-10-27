@@ -1,12 +1,70 @@
 # EdgeFlow
 
-EdgeFlow is a high-performance **API Gateway, Service Discovery system, and Load Balancer written in C++20**. It is being built as a production-style systems project covering TCP/HTTP networking, health-aware routing, reverse proxying, reliability engineering, caching, rate limiting, observability, and measured performance.
+EdgeFlow is an **API gateway, service-discovery system and load balancer written in C++20**: one process that sits in front of a fleet of backend services, finds out which of them are healthy, spreads client requests over those, keeps serving when some of them fail, caches and rate-limits at the edge, and reports what it is doing. It is a complete, tested, benchmarked and containerised systems project (Boost.Asio/Beast, PostgreSQL, Redis, Docker), built phase by phase from the TCP socket up. **All ten phases are complete.**
 
-## Current Status
+| | |
+|---|---|
+| **See it work** | `demo/demo.sh` runs a scripted terminal session (Docker only): load balancing, a backend dying, retries, a circuit breaker, a cache hit, rate limiting, recovery, `/metrics` and a graceful shutdown. Real output: [docs/DEMO.md](docs/DEMO.md) |
+| **How a request flows** | [docs/FLOWCHART.md](docs/FLOWCHART.md) (Mermaid + text), design in [architecture.md](architecture.md) |
+| **How fast, and how that was found** | [docs/PERFORMANCE.md](docs/PERFORMANCE.md): profiles, three measured optimizations (the uncached proxied path 1.9K -> 11.6K requests/s), ten-backend benchmark, failure injection |
+| **How safe** | [docs/SECURITY.md](docs/SECURITY.md): the hardening review, what was changed, what is deliberately left to the operator |
 
-**Phases 1 to 9 are complete.** EdgeFlow is a concurrent, asynchronous **HTTP/1.1 server** built on Boost.Asio and Boost.Beast, on top of the Phase 1 foundation (configuration, logging, lifecycle, graceful shutdown), with a **PostgreSQL-backed service registry** that discovers registered backend instances (Phase 3) and an **active health checker** that excludes unhealthy instances from the routable view and reintroduces recovered ones (Phase 4), and **four load-balancing strategies** that choose among the routable instances (Phase 5). Phase 6 turns it into a **reverse proxy**: `/proxy/{service}/...` is forwarded to a healthy instance chosen by the routing strategy, and the response is returned to the client. Phase 7 makes that forwarding **reliable**: retries with exponential backoff, a circuit breaker per backend instance, failover to another instance, a total request budget and graceful degradation. Phase 8 adds **Redis**: a response cache and distributed Token Bucket rate limiting (per client address, per API key, per service) whose state is shared by every EdgeFlow instance. Phase 9 adds **observability and measurement**: a Prometheus-compatible `/metrics` endpoint (requests/sec, latency percentiles, backend latency, error rate, cache hit ratio, retries, circuit-breaker trips, rejected requests, connections) and reproducible benchmarks.
+## What problem does it solve?
 
-It is **not yet production-hardened** (profiling-driven optimisation, a security review and release hardening are Phase 10), and its measured performance is modest on the uncached proxied path (see [Benchmarking](#benchmarking)). See [Phases.md](Phases.md).
+Once a system is more than one server, clients should not need to know where each service runs, which copies are alive, or what to do when one is not. Without a gateway every client (or every service) re-implements discovery, retry, timeouts and rate limiting, each slightly differently, and an overloaded or dead instance takes its callers down with it. EdgeFlow puts that in one place:
+
+| Problem | What EdgeFlow does |
+|---|---|
+| "Where is the service, and which copies are alive?" | A **service registry** in PostgreSQL plus an **active health checker**: instances register, are probed, and only healthy ones are routable. |
+| "Spread the load" | Four **load-balancing strategies**: round robin, least connections, weighted, consistent hashing. |
+| "One instance died, clients saw errors" | **Retries with backoff, failover to another instance and a circuit breaker per backend**: a request that hit a dead backend is retried elsewhere; a failing backend stops receiving traffic until it recovers. |
+| "A client is hammering the API" | **Token-bucket rate limiting** per client address, API key and service, shared by every gateway instance through Redis (`429` + `Retry-After`). |
+| "The same GET is answered a thousand times" | A **response cache** in Redis with expiry (`X-Cache: HIT/MISS`); a hit never touches a backend. |
+| "What is it doing?" | A Prometheus-compatible `GET /metrics`: requests/s, p50/p95/p99, error ratio, retries, circuit trips, cache hit ratio, rejected requests. |
+| "Redis or PostgreSQL went away" | Redis trouble never fails a request (cache bypassed, limiter fails open or closed by configuration); a PostgreSQL outage returns `503` fast, and cached answers keep being served. |
+
+Real-world analogues are the edge layer of a microservice platform: what NGINX/Envoy/Kong do for routing, health checking and rate limiting, and what a service mesh sidecar does for retries and circuit breaking, here in one readable C++ code base (about 13K lines, plus about 17K lines of tests) with its measurements.
+
+## How it works, in one picture
+
+```text
+Client -> HTTP server -> metrics -> rate limit (Redis) -> cache (Redis) -> router -> load balancer
+                                                                              |            |
+                                              PostgreSQL registry (health) ---+            v
+                                              health checker (probes) ---------+   reliability layer
+                                                                                (retry, circuit breaker,
+                                                                                 failover, time budget)
+                                                                                         |
+                                                                              upstream connection pool
+                                                                                         |
+                                                                                  backend instances
+```
+
+The full chain, every box named after its class, with the three failure situations, is in [docs/FLOWCHART.md](docs/FLOWCHART.md).
+
+## Try it in ten minutes
+
+```bash
+git clone https://github.com/iamankoo/EdgeFlow && cd EdgeFlow
+demo/demo.sh                 # builds the image (a few minutes the first time), starts PostgreSQL, Redis, EdgeFlow and three backends, and walks through 13 steps
+DEMO_PAUSE=1 demo/demo.sh    # the same, pausing for Enter between steps (for presenting)
+demo/demo.sh clean           # remove everything it started
+```
+
+Each step prints the command it runs and the real output; [docs/DEMO.md](docs/DEMO.md) is a captured run with talking points for an interview.
+
+## Measured performance (one 4-vCPU machine, load generator and every dependency on the same box)
+
+| what | result |
+|---|---|
+| Gateway's own HTTP server (`GET /health`) | 62K requests/s, p99 3.2 ms |
+| Proxied request that reaches a backend (rate limiter, routing, proxy, backend): Phase 9 -> Phase 10 | **1.9K -> 11.6K requests/s** (p50 32 -> 5.4 ms) after three measured optimizations |
+| Ten backends, round robin / weighted / consistent hashing, 200K+ requests each | 10.2K / 10.4K / 10.7K requests/s, p95 8.9 / 8.7 / 20.6 ms, 0 errors |
+| Ten backends, least connections, 136K requests | 1.8K requests/s, p95 45.8 ms (two PostgreSQL writes per request, by design) |
+| Backend killed, hung, erroring, plus membership changes, 550K-630K requests | **0 failed requests** (100.000 % answered 2xx); a hung backend costs latency, p95 6.3 s with a 10 s upstream timeout and 10 ms with a 1 s one |
+| Gateway process under load | 1.6-1.8 cores, about 16 MB resident memory |
+
+These are measurements of this code on one machine, not capacity claims; every number, its method and its caveats are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md), and the raw files are in `bench/results/`. The roadmap's targets are stated against them there (met: 10 instances, 100K+ requests, availability, throughput and p95 for three of four strategies; not met: `least_connections` throughput and p95).
 
 ## Implemented
 
@@ -70,22 +128,26 @@ It is **not yet production-hardened** (profiling-driven optimisation, a security
 - Exact latency histograms plus a sliding window; every component's counters read at scrape time, a few atomic increments per request on the request path
 - Google Benchmark micro-benchmarks and a wrk load test (Docker Compose stack, raw results kept in `bench/results`)
 
-## Planned Capabilities (not yet implemented)
-
-- Profiling-driven optimisation, a security review and production hardening (Phase 10)
+**Phase 10 - optimization, production hardening and release** (`proxy.connection_counting`, `routing.snapshot_ttl_ms`, `admin.token_env`; [docs/PERFORMANCE.md](docs/PERFORMANCE.md), [docs/SECURITY.md](docs/SECURITY.md))
+- Profiling (CPU/flamegraph, locks, memory, network, PostgreSQL, Redis) and three optimizations chosen from it and measured one by one: the uncached proxied path went from 1.9K to 11.6K requests/s; one hypothesis (`TCP_NODELAY`) measured as useless and reverted
+- Security and configuration hardening: optional bearer-token protection of the registry API, query strings kept out of logs, loopback-only port publishing, resource limits and a stripped binary in the container, 29 malformed-input/exhaustion checks and dependency-outage/shutdown checks against a running gateway
+- Ten-backend benchmark of every strategy with per-backend distribution, dynamic membership and failure injection; architecture flowchart; scripted interview demo
 
 ## Architecture Overview
 
-See [architecture.md](architecture.md) for the target architecture and the Phase 1 and Phase 2 implementations. Current layout:
+See [architecture.md](architecture.md) for the target architecture and the per-phase implementations, and [docs/FLOWCHART.md](docs/FLOWCHART.md) for the request path. Current layout:
 
 ```text
 .github/workflows/ci.yml   GitHub Actions CI
 cmake/                     CMake modules (dependencies, warnings)
 config/config.yaml         Default configuration (every key documented)
 db/migrations/             PostgreSQL schema (SQL), embedded into the binary at build time
-include/edgeflow/          Public headers: config, core, discovery, logging, network, proxy, routing, storage
+include/edgeflow/          Public headers: cache, config, core, discovery, gateway, logging, network, observability, proxy, ratelimit, redis, reliability, routing, storage
 src/                       Implementation and main.cpp
 tests/                     GoogleTest suites (unit + real-socket integration) and fixtures
+bench/                     micro-benchmarks, load test, Phase 10 profiling / final benchmark / hardening tools, committed results
+demo/                      the scripted terminal demonstration (demo.sh) and its demo backend
+docs/                      FLOWCHART.md, PERFORMANCE.md, SECURITY.md, DEMO.md
 Dockerfile, docker-compose.yml, CMakePresets.json
 ```
 
@@ -167,6 +229,7 @@ The service registry is off by default, so this runs without a database. To use 
 | `health_check.refresh_interval_ms` | `5000` | 100-3600000 | how often the registry is re-read for new, removed and disabled instances |
 | `health_check.max_concurrent_checks` | `32` | 1-1024 | probes running at the same time |
 | `routing.strategy` | `round_robin` | `round_robin`, `least_connections`, `weighted`, `consistent_hashing` | how an instance is chosen among the routable ones |
+| `routing.snapshot_ttl_ms` | `0` | 0-60000 | keep the routable list of a service this long instead of reading PostgreSQL on every request (0 = off). A health or registry change reaches routing at most this late; an expired snapshot is never served while the database is down. Not allowed with `least_connections` |
 | `proxy.enabled` | `false` | true/false | turn the reverse proxy on; requires `database.enabled` |
 | `proxy.connect_timeout_ms` | `2000` | 10-60000 | time to resolve and connect to a backend (`504`) |
 | `proxy.upstream_timeout_ms` | `30000` | 10-600000 | time for the whole upstream exchange: connect, request, complete response (`504`); not below `connect_timeout_ms` |
@@ -174,6 +237,7 @@ The service registry is off by default, so this runs without a database. To use 
 | `proxy.max_idle_connections` | `32` | 0-1024 | idle keep-alive connections kept per backend; 0 disables connection reuse |
 | `proxy.idle_timeout_ms` | `30000` | 10-3600000 | an idle pooled connection older than this is closed instead of reused |
 | `proxy.max_response_bytes` | `16777216` | 1024-268435456 | a larger backend response body is refused with `502` |
+| `proxy.connection_counting` | `always` | `always`, `auto`, `never` | whether every proxied request writes +1/-1 to `connection_count` in PostgreSQL. Only `least_connections` reads it; `auto` counts only for that strategy (measured 2.45x faster for the others), `never` never counts |
 | `reliability.enabled` | `false` | true/false | turn the reliability layer on; requires `proxy.enabled` |
 | `reliability.timeout.total_timeout_ms` | `30000` | 10-3600000 | bound for the WHOLE proxied request, every attempt and backoff pause included; one attempt gets at most `min(proxy.upstream_timeout_ms, what is left)` |
 | `reliability.retry.enabled` | `true` | true/false | retry failed attempts |
@@ -204,9 +268,10 @@ The service registry is off by default, so this runs without a database. To use 
 | `rate_limit.ip.enabled` / `.capacity` / `.refill_per_second` | `true` / `100` / `50` | capacity 1-1000000, refill >0-1000000 (fractions allowed) | one bucket per client address |
 | `rate_limit.api_key.enabled` / `.header` / `.capacity` / `.refill_per_second` | `false` / `X-API-Key` / `1000` / `500` | as above | one bucket per API key; requests without the header are not limited by this scope |
 | `rate_limit.service.enabled` / `.capacity` / `.refill_per_second` / `.overrides` | `false` / `5000` / `2500` / none | as above | one bucket per proxied service; `overrides` gives named services their own `capacity` and `refill_per_second` |
-| `metrics.enabled` | `false` | true/false | serve the Prometheus endpoint and record request metrics; unauthenticated, enable only on a trusted network |
+| `metrics.enabled` | `false` | true/false | serve the Prometheus endpoint and record request metrics; unauthenticated, enable only on a trusted network (bind or firewall it) |
 | `metrics.path` | `/metrics` | `/...` (not `/`, `/proxy`, `/services`, `/health`, `/echo`) | URL of the endpoint (GET/HEAD) |
 | `metrics.window_seconds` | `10` | 1-300 | sliding window of the requests/sec, error-ratio and p50/p95/p99 gauges |
+| `admin.token_env` | empty | env var name | NAME of the environment variable holding a bearer token. When set, every request to `/services` needs `Authorization: Bearer <token>` (`401` otherwise) and the gateway refuses to start if the variable is empty. Empty = the registry API is open (a warning is logged) |
 | `shutdown.grace_period_seconds` | `5` | 0-300 | time in-flight requests get to finish on shutdown |
 
 ## Service Registry (Phase 3)
@@ -271,7 +336,7 @@ To try it locally with Docker, use two EdgeFlow containers as throwaway backends
 ```bash
 docker compose up -d --build
 for n in a b; do
-  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase9
+  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase10
   curl -X POST http://127.0.0.1:8080/services/shop/instances -H 'Content-Type: application/json'     -d "{\"instance_id\":\"$n\",\"host\":\"backend-$n\",\"port\":8080}"
 done
 curl http://127.0.0.1:8080/services/shop/routable      # within a few seconds: a and b
@@ -320,7 +385,7 @@ To try it locally with Docker (two throwaway backends, as in Health Checking):
 ```bash
 docker compose up -d --build
 for n in a b; do
-  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase9
+  docker run -d --name backend-$n --network edgeflow_default edgeflow:phase10
   curl -X POST http://127.0.0.1:8080/services/shop/instances -H 'Content-Type: application/json' \
     -d "{\"instance_id\":\"$n\",\"host\":\"backend-$n\",\"port\":8080}"
 done
@@ -398,18 +463,18 @@ The suite covers configuration, logging, the shutdown coordinator, application l
 
 The registry tests run against a **real PostgreSQL**. Point them at one with `EDGEFLOW_TEST_DB_HOST` (plus optional `EDGEFLOW_TEST_DB_PORT`, `EDGEFLOW_TEST_DB_NAME`, `EDGEFLOW_TEST_DB_USER`, `EDGEFLOW_TEST_DB_PASSWORD`); CI does this with a PostgreSQL service container. Without it, the 58 tests that need a database (and the 53 Phase 8 tests that need Redis, set with `EDGEFLOW_TEST_REDIS_HOST` and optionally `EDGEFLOW_TEST_REDIS_PORT`, some of them together with the database: 111 in all) are reported by CTest as **skipped** (with the reason) and everything else still runs, including the database-unavailable tests. They cover registration, deregistration, lookup, every metadata field, duplicates, validation, SQL metacharacters stored as data, persistence after dropping all in-memory state, concurrent registration, lookup and deregistration, recovery after the server kills a connection, and the HTTP API including a server restart.
 
-At the end of Phase 9 the suite has 786 tests: 786 pass with PostgreSQL and Redis (GCC Debug/Release and Clang Debug, all `-Werror`), and 667 pass with 119 skipped without them (the Docker image build). The 499 Phase 8/9, reliability, proxy, pool, async, server, application and router tests passed 10 repeated runs; AddressSanitizer+UBSan and ThreadSanitizer reported nothing on them. The suites cover unit, integration, concurrency, routing, database, Redis, failure and end-to-end behaviour (the inventory is in [architecture.md](architecture.md) section 25); the Phase 6-9 runtime behaviour, including a real Prometheus scraping the gateway, was observed on real containers with Docker Compose (see `summary.md`). These are correctness results; the performance measurements are under Benchmarking.
+At the end of Phase 10 the suite has 828 tests: 828 pass with PostgreSQL and Redis (GCC Debug, GCC Release and Clang Debug, all `-Werror`), and 703 pass with 125 skipped, 0 failed, without them (the Docker image build). **Run the database-backed tests serially (`ctest -j1`)**: one of them terminates PostgreSQL backends and a few routing tests are timing-sensitive; under parallel load two of them failed, serially none does. On the final tree the Reliability, HealthChecker and Prober suites passed 100 consecutive repeats and the formerly flaky retried-POST test 500; AddressSanitizer+UBSan and ThreadSanitizer reported nothing on the 541 concurrency-relevant tests. The suites cover unit, integration, concurrency, routing, database, Redis, failure and end-to-end behaviour (the inventory is in [architecture.md](architecture.md) section 25); the runtime behaviour was also checked against a real gateway process (`bench/hardening/abuse.sh` 29/29 checks, `bench/hardening/failures.sh` 18/18) and on real containers with Docker Compose (see `summary.md`). These are correctness results; the performance measurements are under Benchmarking.
 
 ## Docker
 
 ```bash
-docker build -t edgeflow:phase9 .            # builds, runs the tests, produces the runtime image
-docker run --rm -p 8080:8080 edgeflow:phase9 # HTTP server only (registry off); stop with Ctrl+C or `docker stop`
+docker build -t edgeflow:phase10 .           # builds, runs the tests, produces the runtime image
+docker run --rm -p 8080:8080 edgeflow:phase10 # HTTP server only (registry off); stop with Ctrl+C or `docker stop`
 docker compose up --build                    # PostgreSQL + EdgeFlow with the registry on; publishes ${EDGEFLOW_HTTP_PORT:-8080}
 docker compose down
 ```
 
-Compose starts `postgres:16` with a health check and a named volume (`docker compose down` keeps your registrations, `down -v` deletes them) and starts EdgeFlow only once the database is healthy, using `config/config.compose.yaml`, which also enables health checking (HTTP `GET /health`, 2 s interval). The database password defaults to a development-only value; override it with `EDGEFLOW_DB_PASSWORD=... docker compose up` or an untracked `.env` file. The image build is bounded to 2 parallel compile jobs (`--build-arg BUILD_JOBS=N` to change it) because Beast is memory-hungry. The image runs as a non-root user and includes a `HEALTHCHECK` that runs `edgeflow --healthcheck` (so no curl is required). The container port must equal `server.port` in the configuration (8080 by default).
+Compose starts `postgres:16` with a health check and a named volume (`docker compose down` keeps your registrations, `down -v` deletes them) and starts EdgeFlow only once the database is healthy, using `config/config.compose.yaml`, which also enables health checking (HTTP `GET /health`, 2 s interval). The database password defaults to a development-only value; override it with `EDGEFLOW_DB_PASSWORD=... docker compose up` or an untracked `.env` file. The image build is bounded to 2 parallel compile jobs (`--build-arg BUILD_JOBS=N` to change it) because Beast is memory-hungry. The image runs as a non-root user and includes a `HEALTHCHECK` that runs `edgeflow --healthcheck` (so no curl is required). The container port must equal `server.port` in the configuration (8080 by default). **Hardening (Phase 10):** Compose publishes the gateway on `127.0.0.1` only (`EDGEFLOW_BIND=0.0.0.0` to expose it deliberately, then also set `admin.token_env`), publishes no PostgreSQL or Redis port, runs EdgeFlow with a read-only root filesystem, all capabilities dropped, `no-new-privileges`, a process limit (256), a memory limit (512 MB) and a small `tmpfs`; the image runs as an unprivileged user and holds a stripped binary. The shipped development database password (`edgeflow_dev_password`) is for local use only: override it with `EDGEFLOW_DB_PASSWORD`.
 
 ## CI
 
@@ -417,16 +482,31 @@ Compose starts `postgres:16` with a health check and a named volume (`docker com
 
 ## Benchmarking
 
-Reproducible with `bench/load/run.sh` (wrk against a Docker Compose stack) and `edgeflow_micro_bench` (Google Benchmark); how, and how to read the results: [bench/README.md](bench/README.md). The committed run ([`bench/results/phase9-codespace-4cpu`](bench/results/phase9-codespace-4cpu/summary.md): GitHub Codespace, 4 vCPU AMD EPYC 7763, load generator, gateway, three backends, PostgreSQL and Redis on the same machine; wrk 2 threads, 64 connections, 3 runs of 20 s each):
+Everything is reproducible: `bench/load/run.sh` (Phase 9, wrk against a Compose stack), `bench/profile/` (profiling and A/B), `bench/final/run.sh` (ten backends, every strategy, failure injection) and `edgeflow_micro_bench` (Google Benchmark); how, and how to read the results: [bench/README.md](bench/README.md). All numbers below are from a GitHub Codespace (4 vCPU AMD EPYC 7763, 15 GiB) where wrk, the gateway, the backends, PostgreSQL and Redis share the machine; wrk 2 threads, 64 connections.
 
-| scenario | median requests/s | wrk p50 | wrk p99 |
+**Optimization, scenario "proxied, cache bypassed"** (rate limiter, PostgreSQL routing, proxy, backend; median of 3 runs of 20 s; each step is an A/B in one run, full tables in [docs/PERFORMANCE.md](docs/PERFORMANCE.md)):
+
+| step | requests/s | p50 | p99 |
 |---|---|---|---|
-| backend direct (tiny `GET /`) | 36253 | 1.53 ms | 4.88 ms |
-| gateway's own `/health` | 36450 | 1.52 ms | 4.93 ms |
-| proxied, cache bypassed (rate limiter, PostgreSQL routing, proxy, backend) | 1784 | 34.6 ms | 54.0 ms |
-| proxied, answered from the Redis cache | 11243 | 5.41 ms | 10.9 ms |
+| Phase 9 gateway | 1,935 | 32.35 ms | 45.98 ms |
+| + `proxy.connection_counting: auto` (no per-request PostgreSQL writes) | 4,732 | 13.19 ms | 22.92 ms |
+| + `routing.snapshot_ttl_ms: 250` (routable list kept for 250 ms) | 8,269 | 7.55 ms | 12.41 ms |
+| + inline attempts (no thread hand-off) | 11,637 | 5.36 ms | 9.44 ms |
 
-The ~10K requests/sec target of the roadmap is met only for cached responses on this machine; the uncached proxied path measured about 1.8K requests/sec, and is the first thing Phase 10 will profile. Not measured yet: availability under failure injection (the ~99.5 % target), a 10-instance deployment with dynamic changes, a 100K+ request distribution run per strategy, and p95 before and after optimisation. Figures from another machine or configuration will differ; the other roadmap targets (p95 ~20 ms, ~99.5 % availability, ~10 instances) remain **targets**.
+The gateway's own `/health` (62.7K -> 62.2K requests/s) and the cache-hit path (13.6K -> 13.5K) did not change, as expected.
+
+**Ten backends, every strategy** ([`bench/results/phase10-final-benchmark/report.md`](bench/results/phase10-final-benchmark/report.md)):
+
+| strategy | requests | requests/s | p50 | p95 | p99 | failed | backend shares |
+|---|---|---|---|---|---|---|---|
+| round_robin | 203,484 | 10,167 | 6.1 ms | 8.9 ms | 11.7 ms | 0 | 10.0 % each |
+| weighted (1,1,1,1,1,2,2,2,3,3) | 208,486 | 10,417 | 6.0 ms | 8.7 ms | 10.8 ms | 0 | 5.9 / 11.8 / 17.6 %, exactly the weights |
+| least_connections | 135,722 | 1,808 | 34.0 ms | 45.8 ms | 55.8 ms | 0 | 8.1-11.6 % |
+| consistent_hashing | 214,899 | 10,722 | 5.1 ms | 20.6 ms | 38.5 ms | 0 | one client address = one backend (sticky); 100,000 distinct keys spread 8.9-11.5 % |
+
+**Failure injection** (10 backends, 66 s: backend killed and restarted, backend hung, backend added, backend removed, backend that passes its health check and answers 503, then removed): 546,773 and 634,001 requests, **0 non-2xx answers, 0 unanswered requests**; 81 / 86 retries (all failovers), 3 circuit-breaker trips, the health checker removed the dead and the hung backend from the routable set about 8-9 s after each failure and restored them after recovery. A hung backend is the costly failure: with `proxy.upstream_timeout_ms: 10000` the 64 closed-loop connections stalled for about 10 s (p95 6.3 s); with `1000` the same failure left p95 at 10.2 ms and p99 at 423 ms.
+
+**The roadmap's targets, against what was measured:** ~10 instances (10, with dynamic changes): measured. ~100K+ requests: measured, 136K-215K per strategy. ~99.5 % availability under failure: 100.000 % in these runs. ~10K requests/s: reached by round_robin, weighted and consistent_hashing, **not** by least_connections (1.8K). p95 ~ 20 ms: reached by round_robin and weighted (8.7-8.9 ms), 20.6 ms for consistent_hashing, **not** reached by least_connections (45.8 ms). Figures from another machine or configuration will differ.
 
 ## Roadmap
 
@@ -441,7 +521,7 @@ The ~10K requests/sec target of the roadmap is met only for cached responses on 
 | 7 | Reliability Engineering | Completed |
 | 8 | Redis Cache & Distributed Rate Limiting | Completed |
 | 9 | Observability, Testing & Performance | Completed |
-| 10 | Optimization, Production Hardening & Release | Not started |
+| 10 | Optimization, Production Hardening & Release | Completed |
 
 Full scope and exit conditions: [Phases.md](Phases.md). Progress log: [summary.md](summary.md).
 

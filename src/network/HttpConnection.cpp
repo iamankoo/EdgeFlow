@@ -182,7 +182,7 @@ void HttpConnection::onRequestComplete() {
   info.keep_alive = request.keep_alive();
   info.head = request.method() == http::verb::head;
   info.method = std::string{request.method_string()};
-  info.target = std::string{request.target()};
+  info.target = loggableTarget(request.target());  // only ever logged
   const std::uint64_t sequence = ++handling_sequence_;
 
   // The handler may answer from any thread, at any time (even before handleAsync returns):

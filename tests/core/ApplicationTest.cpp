@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <csignal>
+#include <cstdlib>
 #include <future>
 #include <thread>
 #include <vector>
@@ -357,6 +358,78 @@ TEST(ApplicationRegistryTest, ServesTheRegistryApiBackedByPostgres) {
             http::status::no_content);
   app.shutdown();
   EXPECT_TRUE(log.contains("shutdown completed"));
+}
+
+// --- registry API protection (Phase 10) ----------------------------------------------
+
+namespace {
+auto registryConfig(const edgeflow::storage::ConnectionParams& db) {
+  auto config = testConfig();
+  config.database.enabled = true;
+  config.database.host = db.host;
+  config.database.port = db.port;
+  config.database.name = db.database;
+  config.database.user = db.user;
+  config.database.password_env = "EDGEFLOW_TEST_DB_PASSWORD";
+  return config;
+}
+}  // namespace
+
+TEST(ApplicationRegistryTest, WithoutAnAdminTokenTheApiIsOpenAndTheLogSaysSo) {
+  EDGEFLOW_REQUIRE_TEST_DATABASE();
+  CapturedLogger log;
+  Application app(registryConfig(*test_db_params), log.logger(), kNoSignals);
+  ASSERT_TRUE(app.initialize()) << log.output();
+  EXPECT_TRUE(log.contains("registry API is not protected"));
+  TestClient client(app.httpPort());
+  EXPECT_EQ(client.get("/services")->result(), http::status::ok);
+}
+
+TEST(ApplicationRegistryTest, AnAdminTokenProtectsTheRegistryApiAndNothingElse) {
+  EDGEFLOW_REQUIRE_TEST_DATABASE();
+  ASSERT_EQ(::setenv("EDGEFLOW_TEST_ADMIN_TOKEN", "tok-for-the-test", 1), 0);
+  CapturedLogger log;
+  auto config = registryConfig(*test_db_params);
+  config.admin.token_env = "EDGEFLOW_TEST_ADMIN_TOKEN";
+  Application app(config, log.logger(), kNoSignals);
+  ASSERT_TRUE(app.initialize()) << log.output();
+  EXPECT_TRUE(log.contains("registry API protected"));
+  EXPECT_FALSE(log.contains("tok-for-the-test")) << "the token itself is never logged";
+
+  TestClient client(app.httpPort());
+  const auto anonymous = client.get("/services");
+  ASSERT_TRUE(anonymous);
+  EXPECT_EQ(anonymous->result(), http::status::unauthorized);
+  const auto wrong = client.request(http::verb::get, "/services", {}, {{"Authorization", "Bearer nope"}});
+  ASSERT_TRUE(wrong);
+  EXPECT_EQ(wrong->result(), http::status::unauthorized);
+  const auto registering = client.request(http::verb::post, "/services/x/instances",
+                                          R"({"instance_id":"a","host":"10.0.0.1","port":9000})");
+  ASSERT_TRUE(registering);
+  EXPECT_EQ(registering->result(), http::status::unauthorized) << "no write without the token";
+  const auto allowed =
+      client.request(http::verb::get, "/services", {}, {{"Authorization", "Bearer tok-for-the-test"}});
+  ASSERT_TRUE(allowed);
+  EXPECT_EQ(allowed->result(), http::status::ok);
+  EXPECT_EQ(client.get("/health")->result(), http::status::ok) << "everything else stays open";
+  app.shutdown();
+  ::unsetenv("EDGEFLOW_TEST_ADMIN_TOKEN");
+}
+
+TEST(ApplicationRegistryTest, ARequestedButMissingOrEmptyTokenRefusesToStart) {
+  EDGEFLOW_REQUIRE_TEST_DATABASE();
+  ::unsetenv("EDGEFLOW_TEST_ADMIN_TOKEN_MISSING");
+  ASSERT_EQ(::setenv("EDGEFLOW_TEST_ADMIN_TOKEN_EMPTY", "", 1), 0);
+  for (const char* name : {"EDGEFLOW_TEST_ADMIN_TOKEN_MISSING", "EDGEFLOW_TEST_ADMIN_TOKEN_EMPTY"}) {
+    CapturedLogger log;
+    auto config = registryConfig(*test_db_params);
+    config.admin.token_env = name;
+    Application app(config, log.logger(), kNoSignals);
+    EXPECT_FALSE(app.initialize()) << name << ": asking for protection and not providing the token must fail closed";
+    EXPECT_TRUE(log.contains("refusing to start with an unprotected registry API")) << name;
+    EXPECT_EQ(app.httpPort(), 0) << "nothing is left listening";
+  }
+  ::unsetenv("EDGEFLOW_TEST_ADMIN_TOKEN_EMPTY");
 }
 
 TEST(ApplicationHealthCheckTest, NotStartedUnlessEnabled) {

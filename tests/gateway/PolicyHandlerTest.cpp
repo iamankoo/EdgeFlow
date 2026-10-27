@@ -96,6 +96,23 @@ class PolicyTest : public ProxyFixture {
     ASSERT_TRUE(server->start());
   }
 
+  // Like startPolicyGateway, with the Phase 7 reliability layer (retries, circuit breakers) in the proxy.
+  void startReliablePolicyGateway(const std::shared_ptr<redis::RedisClient>& client,
+                                  const std::optional<config::CacheConfig>& cache,
+                                  const std::optional<config::RateLimitConfig>& limit) {
+    reliability_config = testReliabilityConfig();
+    router = std::make_shared<routing::Router>(registry, routing::makeLoadBalancer(config::RoutingStrategy::RoundRobin));
+    auto local = std::make_shared<network::LocalRequestHandler>();
+    auto api = std::make_shared<network::RegistryRequestHandler>(registry, local, log.logger(), router);
+    reliability = std::make_shared<reliability::ReliabilityManager>(reliability_config, log.logger(), nullptr,
+                                                                    [] { return 0.0; });
+    proxy = std::make_shared<proxy::ProxyHandler>(api, router, registry, proxy_config, 4, log.logger(), nullptr,
+                                                  nullptr, reliability);
+    policy = makePolicy(client, cache, limit);
+    server = std::make_unique<network::HttpServer>(testServerConfig(), log.logger(), policy);
+    ASSERT_TRUE(server->start());
+  }
+
   // A second EdgeFlow "instance": its own Redis client, limiter, cache and listener, the same
   // backends and the same Redis state.
   void startSecondGateway(std::uint16_t redis_port, const std::optional<config::CacheConfig>& cache,
@@ -825,6 +842,69 @@ TEST_F(PolicyTest, ShuttingDownWhileRedisIsHungAnswersEveryWaitingRequest) {
   for (auto& answer : answers) {
     answer.wait();  // every client call returns (a response or a closed connection), none hangs
   }
+}
+
+// =================================================================== how the layers interact
+
+TEST_F(PolicyTest, CachedAnswersKeepBeingServedWhileTheBackendIsDownAndItsCircuitIsOpen) {
+  REQUIRE_REDIS();
+  auto backend = versionedBackend();
+  addInstance("orders", "a", backend->port());
+  startReliablePolicyGateway(newRedisClient(test_redis_->port), cacheConfig(), std::nullopt);
+  auto client = this->client();
+  const auto warm = getVia(*client, "/proxy/orders/cached");
+  ASSERT_TRUE(warm);
+  ASSERT_EQ(warm->result_int(), 200U);
+  ASSERT_TRUE(storedCount(1));
+
+  backend.reset();  // the only backend dies
+  // Uncached URLs fail (502: refused, retried, then answered) until the circuit opens and they are refused fast.
+  for (int i = 0; i < 6; ++i) {
+    const auto response = getVia(*client, "/proxy/orders/other" + std::to_string(i));
+    ASSERT_TRUE(response);
+    EXPECT_GE(response->result_int(), 500U) << i;
+  }
+  EXPECT_GE(reliability->stats().circuit_opened, 1U);
+
+  const auto hit = getVia(*client, "/proxy/orders/cached");
+  ASSERT_TRUE(hit);
+  EXPECT_EQ(hit->result_int(), 200U) << "a stored answer needs neither the backend nor its circuit";
+  EXPECT_EQ(hit->body(), warm->body());
+  EXPECT_EQ(headerOf(*hit, "X-Cache"), "HIT");
+}
+
+TEST_F(PolicyTest, RetriesInsideOneRequestSpendNoRateLimitTokens) {
+  REQUIRE_REDIS();
+  auto bad = std::make_unique<ScriptedBackend>([](const auto&, auto, auto) { return reply(503, "down"); }, "a");
+  addInstance("orders", "a", bad->port());
+  startReliablePolicyGateway(newRedisClient(test_redis_->port), std::nullopt, ipLimit(2));
+  auto client = this->client();
+  for (int i = 0; i < 2; ++i) {
+    const auto response = getVia(*client, "/proxy/orders/x");
+    ASSERT_TRUE(response);
+    EXPECT_EQ(response->result_int(), 503U) << "the backend's last answer, after the retries";
+  }
+  const auto attempts = bad->requests();
+  EXPECT_GE(attempts, 4U) << "each client request was attempted more than once";
+  const auto refused = getVia(*client, "/proxy/orders/x");
+  ASSERT_TRUE(refused);
+  EXPECT_EQ(refused->result_int(), 429U) << "two client requests used the two tokens, however many attempts they took";
+  EXPECT_EQ(bad->requests(), attempts) << "and a limited request makes no attempt at all";
+}
+
+TEST_F(PolicyTest, ARefusedRequestNeverTouchesTheCircuitBreakerOrTheRetryBudget) {
+  REQUIRE_REDIS();
+  auto bad = std::make_unique<ScriptedBackend>([](const auto&, auto, auto) { return reply(503, "down"); }, "a");
+  addInstance("orders", "a", bad->port());
+  startReliablePolicyGateway(newRedisClient(test_redis_->port), std::nullopt, ipLimit(1));
+  auto client = this->client();
+  ASSERT_TRUE(getVia(*client, "/proxy/orders/x"));
+  const auto before = reliability->stats();
+  for (int i = 0; i < 20; ++i) EXPECT_EQ(getVia(*client, "/proxy/orders/x")->result_int(), 429U);
+  const auto after = reliability->stats();
+  EXPECT_EQ(after.retries, before.retries);
+  EXPECT_EQ(after.circuit_opened, before.circuit_opened);
+  EXPECT_EQ(after.circuit_rejections, before.circuit_rejections);
 }
 
 }  // namespace

@@ -1,0 +1,29 @@
+-- per-thread CPU of the gateway (pidstat -t, 5 s; wait = runnable but not running)
+tid=-        usr=52.89  sys=68.86  wait=0.20   cpu=121.76 edgeflow-o1
+tid=250340   usr=0.20   sys=0.00   wait=0.20   cpu=0.20   |__edgeflow-o1
+tid=250345   usr=8.58   sys=11.38  wait=37.13  cpu=19.96  |__edgeflow-o1
+tid=250346   usr=0.00   sys=0.00   wait=0.00   cpu=0.00   |__edgeflow-o1
+tid=250347   usr=1.80   sys=2.40   wait=7.98   cpu=4.19   |__edgeflow-o1
+tid=250348   usr=2.00   sys=2.20   wait=8.18   cpu=4.19   |__edgeflow-o1
+tid=250349   usr=2.20   sys=2.00   wait=8.18   cpu=4.19   |__edgeflow-o1
+tid=250350   usr=2.20   sys=2.00   wait=7.98   cpu=4.19   |__edgeflow-o1
+tid=250351   usr=1.60   sys=2.40   wait=7.78   cpu=3.99   |__edgeflow-o1
+tid=250352   usr=1.80   sys=2.20   wait=7.98   cpu=3.99   |__edgeflow-o1
+tid=250353   usr=2.00   sys=2.00   wait=8.18   cpu=3.99   |__edgeflow-o1
+tid=250354   usr=1.80   sys=2.00   wait=7.78   cpu=3.79   |__edgeflow-o1
+tid=250355   usr=8.38   sys=11.38  wait=40.32  cpu=19.76  |__edgeflow-o1
+tid=250356   usr=8.18   sys=11.18  wait=39.92  cpu=19.36  |__edgeflow-o1
+tid=250357   usr=6.19   sys=8.78   wait=29.94  cpu=14.97  |__edgeflow-o1
+tid=250358   usr=6.19   sys=8.98   wait=29.54  cpu=15.17  |__edgeflow-o1
+tid=250359   usr=0.00   sys=0.00   wait=0.00   cpu=0.00   |__edgeflow-o1
+tid=250360   usr=0.00   sys=0.00   wait=0.00   cpu=0.00   |__edgeflow-o1
+
+-- the whole machine (mpstat, 5 s): %usr %nice %sys %iowait %irq %soft %steal %guest %gnice %idle
+Average:     all   59.39    2.15   28.04    0.20    0.00    9.06    0.00    0.00    0.00    1.15
+
+-- CPU by program (pidstat -u, 5 s, % of one CPU, summed per command)
+redis-server        0.4
+dockerd             0.4
+pidstat             0.2
+edgeflow-o1         0.2
+containerd          0.2

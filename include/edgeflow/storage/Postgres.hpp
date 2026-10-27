@@ -29,6 +29,12 @@ struct ConnectionParams {
   std::chrono::seconds connect_timeout{5};
   // Server-side cap for a single statement, so a stuck query cannot pin a worker forever.
   std::chrono::milliseconds statement_timeout{10000};
+  // Phase 10: after an attempt to open a connection FAILED SLOWLY (the host did not answer; it took at least
+  // `slow_failure`) the pool refuses further attempts at once for `unreachable_backoff`, then lets one thread
+  // probe. Without it every request would wait out `connect_timeout` in turn and pin its worker thread for the
+  // whole outage. A quick refusal (nothing listens) never starts a back-off.
+  std::chrono::milliseconds slow_failure{250};
+  std::chrono::milliseconds unreachable_backoff{1000};
 };
 
 // A query parameter: text, or std::nullopt for SQL NULL. Parameters are always sent
@@ -141,6 +147,12 @@ class PgPool : public std::enable_shared_from_this<PgPool> {
   std::condition_variable available_;
   std::vector<std::unique_ptr<PgConnection>> idle_;
   std::size_t open_or_opening_{0};  // idle + leased + being opened
+
+  // Fail-fast window after a slow connect failure (see ConnectionParams::unreachable_backoff).
+  bool backing_off_{false};
+  bool probing_{false};
+  std::chrono::steady_clock::time_point retry_at_{};
+  std::string last_error_;
 };
 
 }  // namespace edgeflow::storage

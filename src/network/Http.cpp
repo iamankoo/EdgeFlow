@@ -23,6 +23,18 @@ HttpResponse makeResponse(const HttpRequest& request, http::status status,
                       std::move(body));
 }
 
+std::string loggableTarget(std::string_view target) {
+  constexpr std::size_t kMaxLogged = 200;
+  const auto query = target.find('?');
+  std::string text{target.substr(0, query)};
+  if (text.size() > kMaxLogged) {
+    text.resize(kMaxLogged);
+    text += "...";
+  }
+  if (query != std::string_view::npos) text += "?<query omitted>";
+  return text;
+}
+
 HttpResponse makeErrorResponse(unsigned version, bool keep_alive, http::status status,
                                std::string_view detail) {
   const nlohmann::json body = {{"error", std::string{http::obsolete_reason(status)}},

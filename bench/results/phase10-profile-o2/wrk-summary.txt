@@ -1,0 +1,6 @@
+     50%    8.44ms
+     75%    9.97ms
+     90%   15.53ms
+     99%   51.98ms
+  401527 requests in 1.00m, 91.14MB read
+Requests/sec:   6689.51

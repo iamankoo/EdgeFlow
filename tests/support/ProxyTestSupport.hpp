@@ -338,6 +338,7 @@ class FlakyRegistry final : public discovery::ServiceRegistry {
   using Code = discovery::RegistryErrorCode;
   std::shared_ptr<FakeRegistry> inner = std::make_shared<FakeRegistry>();
   std::atomic<bool> routable_unavailable{false};
+  std::atomic<std::uint64_t> routable_lookups{0};  // lookupRoutable() calls
 
   discovery::Result<discovery::ServiceInstance> registerInstance(const discovery::NewInstance& i) override {
     return inner->registerInstance(i);
@@ -360,6 +361,7 @@ class FlakyRegistry final : public discovery::ServiceRegistry {
     return inner->listInstances();
   }
   discovery::Result<std::vector<discovery::ServiceInstance>> lookupRoutable(std::string_view s) override {
+    routable_lookups.fetch_add(1);
     if (routable_unavailable.load()) return {Code::DatabaseUnavailable, "the database is unavailable"};
     return inner->lookupRoutable(s);
   }
@@ -417,7 +419,8 @@ class ProxyFixture : public ::testing::Test {
   void startGateway(config::RoutingStrategy strategy = config::RoutingStrategy::RoundRobin,
                     std::shared_ptr<discovery::NameResolver> names = nullptr,
                     config::ServerConfig server_config = testServerConfig()) {
-    router = std::make_shared<routing::Router>(registry, routing::makeLoadBalancer(strategy));
+    router = std::make_shared<routing::Router>(registry, routing::makeLoadBalancer(strategy),
+                                               routing::Router::Options{routing_snapshot_ttl, {}});
     auto local = std::make_shared<network::LocalRequestHandler>();
     auto api = std::make_shared<network::RegistryRequestHandler>(registry, local, log.logger(), router);
     if (reliability_config.enabled) {
@@ -483,6 +486,7 @@ class ProxyFixture : public ::testing::Test {
   std::shared_ptr<FlakyRegistry> registry = std::make_shared<FlakyRegistry>();
   config::ProxyConfig proxy_config = testProxyConfig();
   config::ReliabilityConfig reliability_config;  // off unless a test switches it on
+  std::chrono::milliseconds routing_snapshot_ttl{0};  // routing.snapshot_ttl_ms; 0 = every request reads the registry
   std::shared_ptr<reliability::ReliabilityManager> reliability;
   std::shared_ptr<routing::Router> router;
   std::shared_ptr<proxy::ProxyHandler> proxy;

@@ -1,0 +1,41 @@
+2026-10-26 21:16:19.039 [info] [edgeflow-bench] EdgeFlow starting (version 0.1.0)
+2026-10-26 21:16:19.039 [info] [edgeflow-bench] configuration loaded from /workspaces/EdgeFlow/bench/results/phase10-failures/gateway.yaml
+NOTICE:  relation "schema_migrations" already exists, skipping
+2026-10-26 21:16:19.050 [warning] [edgeflow-bench] registry API is not protected (admin.token_env is not set): anyone who can reach this port can register, change or remove instances
+2026-10-26 21:16:19.050 [info] [edgeflow-bench] service registry ready (PostgreSQL 172.17.0.2:5432/edgeflow, 0 migration(s) applied, pool size 8), routing strategy round_robin
+2026-10-26 21:16:19.051 [info] [edgeflow-bench] redis ready (172.17.0.3:6379, 4 connection(s), command timeout 250ms)
+2026-10-26 21:16:19.051 [info] [edgeflow-bench] reverse proxy ready: /proxy/{service}/..., connect timeout 2000ms, upstream timeout 10000ms, up to 32 idle connection(s) per backend, 2 I/O thread(s), connection counting auto (no registry writes per request)
+2026-10-26 21:16:19.051 [info] [edgeflow-bench] reliability ready: total timeout 30000ms, retries on (up to 3 attempt(s), backoff 100-2000ms), circuit breaker on (opens after 5 consecutive failure(s), recovery 30000ms, 1 probe(s))
+2026-10-26 21:16:19.051 [info] [edgeflow-bench] gateway policy ready: rate limiting on, response cache on
+2026-10-26 21:16:19.051 [info] [edgeflow-bench] metrics ready: GET /metrics (Prometheus text format), 10 s window
+2026-10-26 21:16:19.051 [info] [edgeflow-bench] HTTP server listening on 0.0.0.0:8080 (2 worker thread(s))
+2026-10-26 21:16:19.051 [info] [edgeflow-bench] health checker started (type=http, interval=2000ms, timeout=1000ms, failure threshold=3, success threshold=2, refresh every 5000ms)
+2026-10-26 21:16:19.052 [info] [edgeflow-bench] application initialized (name=edgeflow-bench, environment=staging)
+2026-10-26 21:16:19.052 [info] [edgeflow-bench] EdgeFlow ready
+2026-10-26 21:16:19.053 [info] [edgeflow-bench] now checking instance bench/b1 at 172.17.0.4:8080 (health healthy)
+2026-10-26 21:16:19.053 [info] [edgeflow-bench] now checking instance bench/b2 at 172.17.0.5:8080 (health healthy)
+2026-10-26 21:16:19.053 [info] [edgeflow-bench] now checking instance slowsvc/s at 172.17.0.6:8080 (health healthy)
+2026-10-26 21:16:20.034 [warning] [edgeflow-bench] redis 172.17.0.3:6379 is unavailable (timeout: connecting to Redis timed out); commands fail at once for 1000ms and then one is let through to probe it
+2026-10-26 21:16:22.346 [info] [edgeflow-bench] redis 172.17.0.3:6379 is available again
+2026-10-26 21:16:26.024 [warning] [edgeflow-bench] redis 172.17.0.3:6379 is unavailable (timeout: connecting to Redis timed out); commands fail at once for 1000ms and then one is let through to probe it
+2026-10-26 21:16:28.350 [info] [edgeflow-bench] redis 172.17.0.3:6379 is available again
+2026-10-26 21:16:28.916 [warning] [edgeflow-bench] redis 172.17.0.3:6379 is unavailable (timeout: connecting to Redis timed out); commands fail at once for 1000ms and then one is let through to probe it
+2026-10-26 21:16:31.223 [info] [edgeflow-bench] redis 172.17.0.3:6379 is available again
+2026-10-26 21:16:31.810 [warning] [edgeflow-bench] redis 172.17.0.3:6379 is unavailable (timeout: connecting to Redis timed out); commands fail at once for 1000ms and then one is let through to probe it
+2026-10-26 21:16:34.130 [info] [edgeflow-bench] redis 172.17.0.3:6379 is available again
+2026-10-26 21:16:34.701 [warning] [edgeflow-bench] redis 172.17.0.3:6379 is unavailable (timeout: connecting to Redis timed out); commands fail at once for 1000ms and then one is let through to probe it
+2026-10-26 21:16:37.021 [info] [edgeflow-bench] redis 172.17.0.3:6379 is available again
+2026-10-26 21:16:37.701 [warning] [edgeflow-bench] redis 172.17.0.3:6379 is unavailable (timeout: connecting to Redis timed out); commands fail at once for 1000ms and then one is let through to probe it
+2026-10-26 21:16:40.031 [info] [edgeflow-bench] redis 172.17.0.3:6379 is available again
+2026-10-26 21:16:52.217 [info] [edgeflow-bench] shutdown requested (SIGTERM)
+2026-10-26 21:16:52.217 [info] [edgeflow-bench] shutdown sequence started (grace period 5s)
+2026-10-26 21:16:52.217 [info] [edgeflow-bench] stopping component 'http-server'
+2026-10-26 21:16:52.217 [info] [edgeflow-bench] HTTP server stopping: no longer accepting connections
+2026-10-26 21:16:52.218 [info] [edgeflow-bench] HTTP server stopped (247 connection(s) served, 0 rejected)
+2026-10-26 21:16:52.218 [info] [edgeflow-bench] stopping component 'health-checker'
+2026-10-26 21:16:52.218 [info] [edgeflow-bench] health checker stopped (51 probe(s) run, 0 state change(s))
+2026-10-26 21:16:52.218 [info] [edgeflow-bench] stopping component 'reverse-proxy'
+2026-10-26 21:16:52.218 [info] [edgeflow-bench] reverse proxy stopped
+2026-10-26 21:16:52.218 [info] [edgeflow-bench] stopping component 'redis'
+2026-10-26 21:16:52.219 [info] [edgeflow-bench] stopping component 'signal-handlers'
+2026-10-26 21:16:52.219 [info] [edgeflow-bench] shutdown completed

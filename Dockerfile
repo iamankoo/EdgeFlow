@@ -25,12 +25,17 @@ COPY db ./db
 # exhaust a small Docker VM. Override with --build-arg BUILD_JOBS=N on larger machines.
 ARG BUILD_JOBS=2
 
-RUN cmake -S . -B build -G Ninja \
+# The build directory is a BuildKit cache mount: it survives between `docker build` runs, so after a small change only
+# the touched translation units are recompiled (and the dependencies are not downloaded again) instead of the whole
+# tree. Everything the runtime stage needs is installed to /opt/edgeflow, which is part of the image layer, not the
+# cache. The tests run on every build; `--strip` removes the symbols from the installed binary.
+RUN --mount=type=cache,target=/src/build,id=edgeflow-build \
+    cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DEDGEFLOW_WARNINGS_AS_ERRORS=ON \
     && cmake --build build --parallel ${BUILD_JOBS} \
     && ctest --test-dir build --output-on-failure \
-    && cmake --install build --prefix /opt/edgeflow
+    && cmake --install build --prefix /opt/edgeflow --strip
 
 # ---- runtime stage -----------------------------------------------------------
 FROM ubuntu:24.04 AS runtime

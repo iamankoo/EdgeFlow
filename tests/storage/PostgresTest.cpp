@@ -5,6 +5,7 @@
 #include <thread>
 #include <vector>
 
+#include "support/HealthTestSupport.hpp"
 #include "support/PgTestSupport.hpp"
 
 namespace {
@@ -33,6 +34,85 @@ TEST(PgPoolUnavailableTest, PasswordNeverAppearsInErrorsOrLogs) {
   ASSERT_FALSE(lease);
   EXPECT_EQ(lease.error().find("s3cr3t-do-not-log"), std::string::npos);
   EXPECT_FALSE(log.contains("s3cr3t-do-not-log"));
+}
+
+// --- an unreachable database must not pin a thread per request (Phase 10) -------------
+
+namespace {
+std::size_t countOf(CapturedLogger& log, const std::string& text) {
+  std::size_t count = 0;
+  for (auto at = log.output().find(text); at != std::string::npos; at = log.output().find(text, at + 1)) ++count;
+  return count;
+}
+}  // namespace
+
+TEST(PgPoolUnreachableTest, AfterASlowFailureFurtherAttemptsFailAtOnceUntilTheBackoffIsOver) {
+  // A server that accepts the connection and never answers: libpq waits for connect_timeout (1 s), the way it
+  // does for a host that drops packets.
+  edgeflow::testing::RawServer silent(edgeflow::testing::RawServer::Mode::Stall);
+  CapturedLogger log;
+  auto params = edgeflow::testing::unreachableDatabase();
+  params.port = silent.port();
+  params.connect_timeout = std::chrono::seconds{1};
+  params.unreachable_backoff = std::chrono::milliseconds{1500};
+  PgPool pool(params, 4, log.logger());
+
+  auto began = std::chrono::steady_clock::now();
+  EXPECT_FALSE(pool.acquire()) << "the first attempt has to wait out the connect timeout";
+  EXPECT_GE(std::chrono::steady_clock::now() - began, std::chrono::milliseconds{900});
+  EXPECT_EQ(countOf(log, "database connection failed"), 1U);
+
+  began = std::chrono::steady_clock::now();
+  for (int i = 0; i < 20; ++i) {
+    const auto lease = pool.acquire();
+    ASSERT_FALSE(lease);
+    EXPECT_NE(lease.error().find("not retrying yet"), std::string::npos) << lease.error();
+  }
+  EXPECT_LT(std::chrono::steady_clock::now() - began, std::chrono::milliseconds{300})
+      << "20 more attempts inside the back-off cost nothing";
+  EXPECT_EQ(countOf(log, "database connection failed"), 1U) << "and are not logged again";
+
+  std::this_thread::sleep_for(std::chrono::milliseconds{1500});
+  began = std::chrono::steady_clock::now();
+  EXPECT_FALSE(pool.acquire());
+  EXPECT_GE(std::chrono::steady_clock::now() - began, std::chrono::milliseconds{900})
+      << "after the back-off one attempt probes the database again";
+  EXPECT_EQ(countOf(log, "database connection failed"), 2U);
+}
+
+TEST(PgPoolUnreachableTest, OnlyOneThreadProbesAtATimeAfterTheBackoff) {
+  edgeflow::testing::RawServer silent(edgeflow::testing::RawServer::Mode::Stall);
+  CapturedLogger log;
+  auto params = edgeflow::testing::unreachableDatabase();
+  params.port = silent.port();
+  params.connect_timeout = std::chrono::seconds{1};
+  params.unreachable_backoff = std::chrono::milliseconds{200};
+  PgPool pool(params, 4, log.logger());
+  ASSERT_FALSE(pool.acquire());
+  std::this_thread::sleep_for(std::chrono::milliseconds{300});
+
+  std::atomic<int> slow{0};
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 8; ++i) {
+    threads.emplace_back([&] {
+      const auto began = std::chrono::steady_clock::now();
+      const auto lease = pool.acquire();
+      if (!lease && std::chrono::steady_clock::now() - began > std::chrono::milliseconds{500}) slow.fetch_add(1);
+    });
+  }
+  for (auto& thread : threads) thread.join();
+  EXPECT_EQ(slow.load(), 1) << "one probe waited out the timeout, the other seven failed at once";
+}
+
+TEST(PgPoolUnreachableTest, AQuickRefusalNeverStartsABackoff) {
+  CapturedLogger log;
+  PgPool pool(edgeflow::testing::unreachableDatabase(), 2, log.logger());  // nothing listens: refused at once
+  for (int i = 0; i < 5; ++i) {
+    const auto lease = pool.acquire();
+    ASSERT_FALSE(lease);
+    EXPECT_EQ(lease.error().find("not retrying yet"), std::string::npos) << lease.error();
+  }
+  EXPECT_EQ(countOf(log, "database connection failed"), 5U) << "every attempt really tried";
 }
 
 TEST(MigratorUnavailableTest, ReportsFailureWhenDatabaseIsDown) {

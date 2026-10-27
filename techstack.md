@@ -18,8 +18,8 @@ The stack below is **locked**. No technology may be substituted or added without
 | JSON | nlohmann/json | Phase 2 active (response bodies) | Ergonomic JSON handling for APIs and metadata. |
 | Configuration | YAML | Phase 1 active (yaml-cpp) | Human-readable, hierarchical configuration. |
 | Metrics | Prometheus-compatible | Active (Phase 9; own text-format writer) | Standard exposition format that works with common tooling. |
-| Profiling | perf, Valgrind, flamegraphs | Planned (Phase 10) | CPU, memory and contention analysis to drive evidence-based optimization. |
-| Load testing | wrk, custom C++ load generators | Active (Phase 9; wrk 4.1, no custom generator was needed) | wrk for raw HTTP throughput; custom tools where wrk cannot model the scenario. |
+| Profiling | perf, Valgrind, flamegraphs | Active (Phase 10; perf 6.8 sampling `cpu-clock`, FlameGraph, heaptrack, strace, pidstat/mpstat, `pg_stat_statements`) | CPU, memory and contention analysis that drove evidence-based optimization (see docs/PERFORMANCE.md). |
+| Load testing | wrk, custom C++ load generators | Active (Phase 9-10; wrk 4.1 with a Lua report script for p95; no custom generator was needed) | wrk for raw HTTP throughput; custom tools where wrk cannot model the scenario. |
 | CI | GitHub Actions | Phase 1 active | Automated build and test on every push. |
 
 ## Load-balancing algorithms (locked, implemented in Phase 5)
@@ -45,3 +45,5 @@ All four will be implemented (Phase 5) behind one strategy abstraction so they c
 | Health probing | Boost.Asio timers, resolver and sockets (TCP connect) and Boost.Beast (HTTP request and response head) on a private `io_context` thread; blocking PostgreSQL calls on a separate one-thread Asio pool. Host names are resolved by a small per-host-isolated resolver (blocking `getaddrinfo` on detached threads, capped). No new dependency |
 | Load balancing | Four strategies behind one `LoadBalancer` abstraction, standard library only: smooth weighted round-robin; a consistent-hash ring with 160 virtual nodes and a platform-independent 64-bit hash (FNV-1a + murmur3 finaliser). No new dependency |
 | Minimum CMake | 3.25 |
+| Profiling harness (Phase 10) | Shell + Python 3 standard library around the locked tools above: `bench/profile` (profiles, A/B), `bench/final` (final benchmark and report), `bench/hardening` (abuse and failure tests). Demo backends are small Python 3 standard-library programs (`demo/backend.py`, `bench/final/bad_backend.py`) used only to demonstrate and test; no new runtime dependency of EdgeFlow itself |
+| Registry API protection (Phase 10) | A bearer token read from an environment variable (`admin.token_env`), compared in constant time; no new dependency. TLS is intentionally out of scope (HTTP/1.1 only): terminate it in front of the gateway |

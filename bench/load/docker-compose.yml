@@ -9,7 +9,7 @@
 name: edgeflow-bench
 
 x-edgeflow: &edgeflow
-  image: ${EDGEFLOW_IMAGE:-edgeflow:phase9}
+  image: ${EDGEFLOW_IMAGE:-edgeflow:phase10}
   restart: "no"
 
 services:

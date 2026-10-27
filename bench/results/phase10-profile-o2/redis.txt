@@ -1,0 +1,9 @@
+cmdstat_pexpire:calls=401589,usec=495622,usec_per_call=1.23,rejected_calls=0,failed_calls=0
+cmdstat_evalsha:calls=401589,usec=11017500,usec_per_call=27.43,rejected_calls=0,failed_calls=0
+cmdstat_hmget:calls=401589,usec=559730,usec_per_call=1.39,rejected_calls=0,failed_calls=0
+cmdstat_hset:calls=401589,usec=609950,usec_per_call=1.52,rejected_calls=0,failed_calls=0
+total_connections_received:2
+total_commands_processed:2007947
+instantaneous_ops_per_sec:36223
+rejected_connections:0
+slowlog_entries: 0

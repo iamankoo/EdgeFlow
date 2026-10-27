@@ -77,6 +77,21 @@ struct HealthCheckConfig {
 // How an instance is chosen among the routable ones (Phase 5).
 struct RoutingConfig {
   RoutingStrategy strategy{RoutingStrategy::RoundRobin};
+  // How long the routable set of a service is kept and shared between requests instead of being read from
+  // PostgreSQL by every request (Phase 10). 0 = never kept (every request reads it; the default). A change in
+  // health or registration reaches routing at most this late; not allowed with least_connections, which
+  // reads live counts (see routing::Router::Options).
+  std::chrono::milliseconds snapshot_ttl{0};
+};
+
+// Whether the proxy keeps `connection_count` of the chosen instance equal to the requests in flight (one
+// registry write when a request starts and one when it ends). Only the Least Connections strategy reads that
+// count. Phase 10 profiling showed these two writes per request are 86.7 % of the PostgreSQL execution time of
+// a proxied request (all requests update the same few rows), so they can be skipped when nothing reads them.
+enum class ConnectionCounting {
+  Always,  // every proxied request (the Phase 6-9 behaviour; the default)
+  Auto,    // only when routing.strategy is least_connections
+  Never    // never (the count stays whatever it was; the registry API still shows it)
 };
 
 // Reverse proxy (Phase 6): forwards `/proxy/{service}/...` to a healthy instance chosen by
@@ -97,6 +112,7 @@ struct ProxyConfig {
   std::chrono::milliseconds idle_timeout{30000};
   // A backend response larger than this (body bytes) is refused with 502.
   std::size_t max_response_bytes{16 * 1024 * 1024};
+  ConnectionCounting connection_counting{ConnectionCounting::Always};
 };
 
 // Phase 7 reliability engineering around the reverse proxy (see edgeflow/reliability/).
@@ -231,6 +247,13 @@ struct MetricsConfig {
   unsigned window_seconds{10};
 };
 
+// Phase 10: protection of the registry API (/services).
+struct AdminConfig {
+  // Name of the environment variable holding a bearer token. Empty (the default) = the registry API is open,
+  // as in Phases 3-9; set it whenever the port is reachable by anything you do not trust.
+  std::string token_env;
+};
+
 struct ShutdownConfig {
   std::chrono::seconds grace_period{5};
 };
@@ -247,6 +270,7 @@ struct Config {
   CacheConfig cache;
   RateLimitConfig rate_limit;
   MetricsConfig metrics;
+  AdminConfig admin;
   ShutdownConfig shutdown;
 };
 
@@ -254,6 +278,7 @@ struct Config {
 [[nodiscard]] std::string_view toString(LogLevel level) noexcept;
 [[nodiscard]] std::string_view toString(HealthCheckType type) noexcept;
 [[nodiscard]] std::string_view toString(RoutingStrategy strategy) noexcept;
+[[nodiscard]] std::string_view toString(ConnectionCounting counting) noexcept;
 [[nodiscard]] std::string_view toString(RateLimitFailurePolicy policy) noexcept;
 
 }  // namespace edgeflow::config

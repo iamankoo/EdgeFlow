@@ -1,6 +1,6 @@
 # EdgeFlow — Development Phases
 
-**Current Phase: Phase 9 completed — awaiting Phase 10 requirements**
+**Current Phase: Phase 10 completed — the roadmap is finished**
 
 This document is the authoritative roadmap. Phases must not be skipped. A phase begins only after the previous phase has met its exit condition. Later-phase functionality must not be implemented early unless strictly required as a dependency and clearly documented.
 
@@ -17,7 +17,7 @@ Before implementing a phase, its detailed implementation prompt must be cross-ch
 | 7 | Reliability Engineering | Completed |
 | 8 | Redis Cache & Distributed Rate Limiting | Completed |
 | 9 | Observability, Testing & Performance | Completed |
-| 10 | Optimization, Production Hardening & Release | Not started |
+| 10 | Optimization, Production Hardening & Release | Completed |
 
 ---
 
@@ -260,6 +260,8 @@ Then perform:
 - final README
 
 **Exit condition:** EdgeFlow is a reproducible, documented, tested, benchmarked, Dockerized systems project suitable for a serious backend/SDE portfolio.
+
+**Completion summary:** Met. Profiled the Phase 9 gateway (perf + FlameGraph, pidstat, strace, `pg_stat_statements`, Redis `commandstats`, heaptrack, network counters) and changed only what the profiles named. The uncached proxied path (S2, wrk, 64 connections, 4 vCPU shared machine) went **1,935 -> 11,637 req/s (6.0x)**, p50 32.35 -> 5.36 ms, p99 45.98 -> 9.44 ms, in three measured steps: `proxy.connection_counting: auto` (no PostgreSQL row updates unless `least_connections`), `routing.snapshot_ttl_ms` (bounded-staleness routing snapshot, opt-in) and running attempts inline on the I/O thread when nothing can block. `TCP_NODELAY` was tried, showed no difference, and was reverted; memory, Redis and selection cost were measured and left alone. Hardening: opt-in bearer token for the registry API (`admin.token_env`, fail closed), log redaction of request targets, loopback-only Compose publishing, pids/memory limits, tmpfs, stripped binary, BuildKit cache; a PostgreSQL pool fail-fast window was added after the failure test showed an unreachable database multiplied latency. Verified on a running gateway: 29/29 malformed-input and resource-abuse checks, 18/18 dependency-failure and graceful-shutdown checks (exit code 0, in-flight request completed). Final benchmark (10 backends, 136K-215K requests per strategy, 0 failed requests): 10.2K-10.7K req/s for round_robin, weighted and consistent_hashing, **1.8K req/s and p95 45.8 ms for `least_connections` (target missed)**, p95 8.7-8.9 ms for round_robin and weighted, 20.6 ms for consistent_hashing; availability 100 % over 546,773 and 634,001 requests while backends were killed, hung and added (a hung backend costs latency, set by `upstream_timeout_ms`). Tests: 828 (Debug, Release and Clang `-Werror` pass 828/828 serially with PostgreSQL and Redis; database tests must run serially), ASan+UBSan and TSan clean on the 541 concurrency-relevant tests. Documentation: `docs/FLOWCHART.md` (architecture flowchart), `docs/PERFORMANCE.md`, `docs/SECURITY.md`, `docs/DEMO.md` (a reproducible terminal demo with real captured output, `demo/demo.sh`), final README. Limitations: one machine type and closed-loop load, no TLS, `/metrics` unauthenticated, the Mermaid diagrams were not rendered in a browser, the remote GitHub Actions run has not been confirmed. See `summary.md`.
 
 ---
 

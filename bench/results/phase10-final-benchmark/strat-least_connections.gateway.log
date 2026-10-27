@@ -1,0 +1,2 @@
+NOTICE:  relation "schema_migrations" already exists, skipping
+2026-10-15 08:40:51.040 [warning] [edgeflow-bench] registry API is not protected (admin.token_env is not set): anyone who can reach this port can register, change or remove instances

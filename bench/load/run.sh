@@ -4,7 +4,7 @@
 #   bench/load/run.sh [label]
 #
 # Environment (all optional):
-#   EDGEFLOW_IMAGE   image to run            (default edgeflow:phase9)
+#   EDGEFLOW_IMAGE   image to run            (default edgeflow:phase10)
 #   RUNS             measured runs/scenario  (default 3)
 #   DURATION         seconds per run         (default 20)
 #   WARMUP           seconds of warm-up      (default 5)
@@ -22,7 +22,7 @@ label="${1:-$(date -u +%Y%m%dT%H%M%SZ)}"
 out="$root/bench/results/$label"
 RUNS="${RUNS:-3}"; DURATION="${DURATION:-20}"; WARMUP="${WARMUP:-5}"
 THREADS="${THREADS:-2}"; CONNECTIONS="${CONNECTIONS:-64}"
-export EDGEFLOW_IMAGE="${EDGEFLOW_IMAGE:-edgeflow:phase9}"
+export EDGEFLOW_IMAGE="${EDGEFLOW_IMAGE:-edgeflow:phase10}"
 compose=(docker compose -f "$here/docker-compose.yml")
 gateway=http://127.0.0.1:8080
 backend=http://127.0.0.1:9101

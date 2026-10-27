@@ -1,0 +1,10 @@
+-- ss -s
+TCP:   145 (estab 71, closed 59, orphaned 0, timewait 40)
+
+-- TCP counters since the namespace started (nstat)
+TcpRetransSegs               565
+TcpOutRsts                   11329
+TcpExtDelayedACKs            47111
+TcpExtListenOverflows        0
+TcpExtListenDrops            0
+TcpExtTCPTimeouts            2

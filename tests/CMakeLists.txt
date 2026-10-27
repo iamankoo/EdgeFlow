@@ -17,9 +17,11 @@ add_executable(edgeflow_tests
   gateway/PolicyHandlerTest.cpp
   gateway/PolicyPostgresTest.cpp
   logging/LoggerTest.cpp
+  network/AdminAuthTest.cpp
   network/AsyncHandlerTest.cpp
   network/HealthProbeTest.cpp
   network/HttpServerTest.cpp
+  network/LogRedactionTest.cpp
   network/RegistryApiTest.cpp
   network/RequestHandlerTest.cpp
   network/TcpServerTest.cpp
@@ -27,6 +29,8 @@ add_executable(edgeflow_tests
   observability/MetricsFullStackTest.cpp
   observability/MetricsHandlerTest.cpp
   observability/MetricsTest.cpp
+  proxy/ConnectionCountingTest.cpp
+  proxy/InlineAttemptTest.cpp
   proxy/ProxyHandlerTest.cpp
   proxy/ProxyHeadersTest.cpp
   proxy/ProxyPostgresTest.cpp
@@ -38,6 +42,7 @@ add_executable(edgeflow_tests
   reliability/ReliabilityPostgresTest.cpp
   reliability/ReliabilityProxyTest.cpp
   reliability/RetryPolicyTest.cpp
+  routing/RouterSnapshotTest.cpp
   routing/RoutingPostgresTest.cpp
   routing/RouterTest.cpp
   routing/StrategyTest.cpp

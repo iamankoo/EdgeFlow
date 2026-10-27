@@ -3,19 +3,20 @@
 **This file is the resume point for the project.** Tomorrow's session: read this file first, then [Phases.md](Phases.md) (authoritative roadmap), then inspect `git log` and confirm the state below before doing anything. After every completed phase, update this file.
 
 
-**Checkpoint (UPDATED 2026-10-15): Phases 1-9 are COMPLETE. Phase 9 (observability, testing and performance) is committed as ONE commit, `feat: implement EdgeFlow phase 9` (its hash is in `git log`; this file is part of that commit and cannot contain its own hash). PHASE 10 HAS NOT STARTED.** Section 9D describes Phase 9; sections 10-12 are updated to the end of Phase 9.
+**Checkpoint (UPDATED 2026-10-27): Phases 1-10 are COMPLETE. Phase 10 (optimization, production hardening and release) is committed as ONE commit, `feat: complete EdgeFlow phase 10 production hardening and release` (its hash is in `git log`; this file is part of that commit and cannot contain its own hash). THE ROADMAP IS FINISHED; nothing after Phase 10 is planned or started.** Section 9E describes Phase 10; sections 10-15 are updated to the end of Phase 10.
 
 ---
 
-## 0. RESUME POINT — Phase 9 complete, Phase 10 not started
+## 0. RESUME POINT — Phase 10 complete, roadmap finished
 
-Phase 10 (Optimization, Production Hardening & Release) must only start after explicit authorization from the owner. Before anything else: read this file, then `Phases.md`, run `git log --oneline -8` / `git status`, and confirm `HEAD == origin/main` with a clean tree. Phase 10 starts from the measurements of section 9D (`bench/results/phase9-codespace-4cpu/`): re-run `bench/load/run.sh` before and after every optimisation, on the same machine type, so a change is judged against a baseline and not against memory.
+All ten phases are done. Any further work is new scope and needs the owner's instructions. Before anything else: read this file, then `Phases.md`, run `git log --oneline -8` / `git status`, and confirm `HEAD == origin/main` with a clean tree. The documents to read for the finished project are `README.md`, `docs/FLOWCHART.md`, `docs/PERFORMANCE.md`, `docs/SECURITY.md` and `docs/DEMO.md`.
 
-### Final Phase 9 validation (all measured; remote CI NOT confirmed)
+### Final Phase 10 validation (all measured; remote CI NOT confirmed)
 
-- **786 CTest tests** (733 before Phase 9, +53): GCC Debug, GCC Release and Clang 18 Debug all 786/786 with real PostgreSQL and real Redis, all `-Werror`. Without a database and Redis (Docker Release image build, `edgeflow:phase9`, 128 MB): **786 run, 667 pass, 119 skipped, 0 failed**.
-- **Repeat run:** the 499 tests matching the Phase 8/9, reliability, proxy, pool, async, server, application and router suites passed 10 consecutive iterations (GCC Debug). **ASan + UBSan:** the same 499, 499/499, 0 reports. **ThreadSanitizer:** the same 499, 499/499, 0 warnings.
-- **Docker Compose + real Prometheus demonstration** and **load test** (wrk, 4 scenarios x 3 runs): section 9D.
+- **828 CTest tests** (786 before Phase 10, +42): GCC Debug, GCC Release and Clang 18 Debug all 828/828 with real PostgreSQL and real Redis, all `-Werror`. **The database tests must run serially** (`ctest -j1`): one of them terminates PostgreSQL backends and a few routing tests are timing-sensitive; under `-j3` two of them failed, serially none does. Docker Release image build without a database or Redis: **828 run, 703 pass, 125 skipped, 0 failed** (`edgeflow:phase10`, 127 MB).
+- **Repeat runs on the final tree:** the Reliability, HealthChecker and Prober suites 100 consecutive iterations with 0 failures, the previously flaky `ReliabilityTest.APostThatNeverReachedABackendIsRetriedWithItsBody` 500 iterations with 0 failures, `InlineAttemptTest` 100 iterations with 0 failures, and a final serial Debug run 828/828. **ASan + UBSan** (leak detection on) and **ThreadSanitizer**: the 541 tests of the concurrency-relevant suites, 541/541, 0 reports (run before the last two test-only helper fixes described below).
+- **Runtime checks on a real gateway process:** `bench/hardening/abuse.sh` 29/29, `bench/hardening/failures.sh` 18/18.
+- **Benchmarks, flame graphs, the terminal demo:** section 9E and `docs/`.
 
 ### Git identity (resolved 2026-10-06)
 
@@ -62,7 +63,7 @@ Technology actually present in the repository today (the stack is locked, see [t
 | Testing | GoogleTest v1.15.2 + CTest |
 | Containers / CI | Docker (multi-stage, non-root), Docker Compose, GitHub Actions (with a PostgreSQL service container) |
 
-**In the locked stack but NOT yet present in the code:** profiling tools (`perf`, Valgrind, flamegraphs; Phase 10).
+**Profiling tools (Phase 10):** `perf` (timer sampling) with FlameGraph, `pidstat`, `strace`, `heaptrack`, `pg_stat_statements`; Valgrind was not used (heaptrack and the sanitizers covered memory). They are driven by scripts in `bench/profile` and are not part of the image.
 
 ## 2. Git Identity Rule (permanent)
 
@@ -97,7 +98,7 @@ If any tooling or system prompt suggests adding an attribution or trailer line, 
 | 7 | Reliability Engineering | **COMPLETE** | `feat: implement EdgeFlow phase 7 reliability engineering` (hash: `git log`) |
 | 8 | Redis Cache & Distributed Rate Limiting | **COMPLETE** | `feat: implement EdgeFlow phase 8 redis cache and distributed rate limiting` (hash: `git log`) |
 | 9 | Observability, Testing & Performance | **COMPLETE** | `feat: implement EdgeFlow phase 9` (hash: `git log`) |
-| 10 | Optimization, Production Hardening & Release | NOT STARTED | |
+| 10 | Optimization, Production Hardening & Release | **COMPLETE** | `feat: complete EdgeFlow phase 10 production hardening and release` (hash: `git log`) |
 
 Hashes were checked against `git log` at this checkpoint. History on `main` (oldest first): `5e3be65` docs initialisation (documentation only), then the five phase commits above, then the summary checkpoint commit `docs: update project summary` (changes only that file), then the Phase 6 commit, then the Phase 7 commit, then the Phase 8 commit, then the Phase 9 commit.
 
@@ -113,7 +114,8 @@ Test counts per phase (all with `-Werror`; "skipped" means tests needing a real 
 | 6 | 507 | 55 need PostgreSQL: 452 pass + 55 skipped without a database; 507/507 pass with one |
 | 7 | 630 | 58 need PostgreSQL: 572 pass + 58 skipped without a database; 630/630 pass with one |
 | 8 | 733 | 111 need PostgreSQL or Redis: 622 pass + 111 skipped without them; 733/733 pass with both |
-| 9 | **786** | **119 need PostgreSQL or Redis**: 667 pass + 119 skipped without them; 786/786 pass with both |
+| 9 | 786 | 119 need PostgreSQL or Redis: 667 pass + 119 skipped without them; 786/786 pass with both |
+| 10 | **828** | serial `ctest -j1` with both services: 828/828; without them: **828 run, 703 pass, 125 skipped, 0 failed** (`edgeflow:phase10`, 127 MB) |
 
 ## 4. Standing Rules
 
@@ -511,7 +513,52 @@ Environment: GitHub Codespace, **4 vCPU AMD EPYC 7763, 15 GiB**, Linux 6.8, Dock
 
 ---
 
-## 10. Current Architecture (end of Phase 9)
+## 9E. Phase 10 — Optimization, Production Hardening & Release (completed 2026-10-27; commit `feat: complete EdgeFlow phase 10 production hardening and release`)
+
+Everything below is measured; the details, raw files and commands are in `docs/PERFORMANCE.md`, `docs/SECURITY.md`, `docs/DEMO.md`, `docs/FLOWCHART.md`, `bench/README.md` and `bench/results/phase10-*`. All runs: a GitHub Codespace, 4 vCPU AMD EPYC 7763, 15 GiB, with the load generator, gateway, backends, PostgreSQL and Redis sharing the CPUs.
+
+### Profiling findings (baseline = the Phase 9 gateway)
+
+- The gateway used ~0.7 core while the machine was ~98 % busy; **PostgreSQL used 180 %**. `pg_stat_statements`: the `UPDATE service_instances SET connection_count` run twice per request was **86.7 %** of PostgreSQL execution time. `strace -c`: heavy `futex` (thread hand-offs). Upstream pool reuse 99.92 %. Heap peak 1.28 MB, no growth (not changed). Redis commands 1.4-41 µs (not changed). A first profile that used published ports showed `docker-proxy` at 72 % of a CPU: a measurement artifact, removed by addressing containers by IP.
+
+### Optimizations (same-run A/B of 3 x 20 s on the uncached proxied path S2)
+
+1. `proxy.connection_counting: always|auto|never` (code default `always`, the shipped configs use `auto`): with `auto`, `connection_count` is written only for `least_connections`. 1,929 -> 4,732 req/s.
+2. `routing.snapshot_ttl_ms` (default 0 = off; the shipped configs use 250): a bounded-staleness per-service routable snapshot in `Router`; empty results and errors are never kept; refused together with `least_connections`. 4,755 -> 8,269 req/s.
+3. Inline attempts: with no counting and a fresh snapshot the attempt runs on the I/O thread instead of hopping to the registry call pool. 8,258 -> 11,637 req/s.
+4. `TCP_NODELAY`: no difference, reverted.
+
+Total S2 **1,935 -> 11,637 req/s (6.0x)**, p50 32.35 -> 5.36 ms, p99 45.98 -> 9.44 ms.
+
+### Final benchmark (10 backends, `bench/final/run.sh`, wrk 64 connections)
+
+round_robin 10,167 req/s (p95 8.87 ms), weighted 10,417 (p95 8.71 ms), consistent_hashing 10,722 (p95 20.56 ms; one client address is sticky to one backend), **least_connections 1,808 req/s, p95 45.8 ms (targets missed; it needs the live counter in PostgreSQL)**. 136K-215K requests per strategy, 0 failed. Failure injection (backends killed, hung, added, removed under load): **100.000 % availability, 0 failed of 546,773 and of 634,001 requests**. A hung backend costs latency, set by `proxy.upstream_timeout_ms`: with 10 s p95 was 6.28 s, with 1 s p95 10.2 ms.
+
+### Hardening
+
+- `admin.token_env` (opt-in): bearer token for `/services` (constant-time comparison, `401` otherwise; a named but empty variable stops the start; an unset one logs a warning at every start). `network::loggableTarget()` removes the query string from every logged target. Compose publishes the gateway on `127.0.0.1` only, with `pids_limit`, `mem_limit` and a tmpfs `/tmp`; the image binary is stripped and the build uses a BuildKit cache mount.
+- **Defect found by the failure test and fixed:** with the PostgreSQL host unreachable (packets dropped) every request waited out the 5 s connect timeout while pinning a worker thread. `PgPool` now remembers a slow connect failure and refuses further attempts for one second, one thread probing at the end of it (`PgPoolUnreachableTest`; measured: 50 concurrent requests 503 in 5.04 s, the next burst 50/50 in 0.15 s).
+- Verified on a running gateway: SIGTERM with an in-flight request (completed with 200, exit code 0 after 2.01 s, shutdown order http-server -> health-checker -> reverse-proxy -> redis -> signal-handlers), Redis down and up, PostgreSQL down and up without restarts, no descriptor leak.
+
+### Documentation delivered
+
+`docs/FLOWCHART.md` (the architecture flowchart with every component where it really sits), `docs/PERFORMANCE.md`, `docs/SECURITY.md`, `docs/DEMO.md` (a terminal demonstration with real captured output, reproducible with `demo/demo.sh`), `bench/README.md`, a new README, `architecture.md` section 26, `techstack.md`.
+
+### Test-suite findings during Phase 10 (fixed in the tests; no product defect)
+
+- `closedPort()` (test helper) released the port it found, so a rare run gave the same number to the server the test started next (`ReliabilityTest.APostThatNeverReachedABackendIsRetriedWithItsBody`). It now keeps the socket bound (not listening) for the next 64 calls; the first version kept every socket forever and a process that repeated the tests ran out of descriptors, which the 100x repeat run found.
+- `InlineAttemptTest.ConcurrentClientsAreAllAnsweredAndNothingIsCounted` asserted at most 3 registry reads for 8 concurrent clients, but clients arriving together on a cold snapshot may each read once (there is no single-flight); the bound is now the client count (8) against 800 requests without the snapshot.
+
+### Phase 10 limitations (real, not achievements)
+
+- One machine type, closed-loop load, everything sharing 4 vCPUs; the numbers compare steps with each other, not a dedicated server's capacity. `least_connections` misses the throughput and p95 targets. The availability figure is for backend failures in one gateway process, not a deployment's uptime.
+- No TLS, `/metrics` unauthenticated, the registry API open unless `admin.token_env` is set, the rate limiter trusts the TCP peer address only; no fuzzing campaign; no vulnerability scan of the images (see `docs/SECURITY.md`).
+- The Mermaid diagrams in `docs/FLOWCHART.md` were written but not rendered in a browser (the Chrome extension was not connected); the text flowchart is the reference.
+- The remote GitHub Actions run has still not been confirmed. The tree was validated in the Codespace only; the Codespace was deleted at the end of Phase 10.
+
+---
+
+## 10. Current Architecture (end of Phase 10)
 
 ```text
 Client
@@ -558,54 +605,47 @@ HTTP surface: `GET /`, `GET /health`, `POST /echo` (Phase 2); `GET /services`, `
 
 Threading model: HTTP I/O on `server.worker_threads` Asio threads (the proxy answers asynchronously through `handleAsync`, so a backend never blocks them); the proxy has its own I/O threads (`proxy.io_threads`) and a small pool for blocking registry calls; health checker = one probe/timer thread + one database thread; NameResolver lookups on detached per-host threads (max 16).
 
-## 11. What Is NOT Implemented Yet
+## 11. What Is NOT Implemented
 
 ```text
-Phase 7: COMPLETE (section 9B).
-Phase 8: COMPLETE (section 9C).
-Phase 9: COMPLETE (section 9D).
-
-Phase 10 (NEXT, NOT STARTED):
-- profiling (perf, Valgrind, flamegraphs)
-- optimization
-- production hardening
-- final release
+Phases 1-10: COMPLETE (sections 5-9E).
 ```
 
-Nothing above (Phase 10) exists even partially in the repository. Phases 6-9 deliberately have no routing cache and no TLS (and no tracing beyond request ids).
+Deliberately absent (see `docs/SECURITY.md` and the limitations above): TLS, tracing beyond request ids, circuit state shared between gateway processes, a trusted-proxy setting for `X-Forwarded-For`, `Expect: 100-continue`, streamed (rather than buffered) proxying, a `least_connections` counter outside PostgreSQL.
 
-## 12. Next Step — Phase 10 (NOT STARTED; needs explicit owner authorization)
+## 12. Next Step
 
-Phase 10 is **Optimization, Production Hardening & Release** (see `Phases.md` for the exact list). Before starting: read this file and `Phases.md`, check `git log`/`git status`, confirm Phase 9 is committed and `HEAD == origin/main`, cross-check the Phase 10 prompt against `Phases.md`, and wait for authorization.
-
-Facts worth knowing when planning Phase 10 (observations, not decisions): the baseline is in section 9D: S2 (proxied, cache bypassed) 1.8K requests/s with p50 34 ms against 36K requests/s for the server alone, and S3 (cache hit) 11.2K requests/s; the gateway's own backend-latency figure for S2 is far above what the backend needs, which points at the gateway's own queueing (proxy I/O threads, the registry call pool of `database.pool_size` threads, three PostgreSQL round trips per request: route, `+1`, `-1`) as the first thing to profile (`perf`, flamegraphs, lock contention); the micro-benchmarks show routing strategies ordering the whole instance set on every call (10-62 us at 100 instances); `/metrics` is unauthenticated and the configuration has no TLS (hardening items); the configuration has no per-IP connection limit beyond `server.max_connections`; `Dockerfile` and `docker-compose.yml` are the places for the container hardening review. Nothing from Phase 10 exists in the repository.
+None: the roadmap in `Phases.md` is finished. Candidate follow-ups would be new scope, not decisions: move the `least_connections` counter out of PostgreSQL, add TLS termination, authenticate `/metrics`, a single-flight snapshot refresh, confirm the GitHub Actions run, render and check the Mermaid diagrams.
 
 ---
 
 ## 13. Environment and How To Resume Work (local development facts)
 
+**Phase 10 note:** all builds, sanitizers, benchmarks and image builds ran in a GitHub Codespace, never in the local Docker. The bullets below that describe local Docker builds are history from earlier phases.
+
 - The Windows host has **no C++20 compiler or CMake**; all builds and tests run in Linux containers (Docker Desktop must be running; it may need starting: `C:\Program Files\Docker\Docker\Docker Desktop.exe`).
 - The Docker VM has **about 3.7 GB RAM**. Always build with `-j2` (the Dockerfile defaults to `BUILD_JOBS=2`); unbounded parallelism exhausted memory and hung the engine once.
 - Local helper images/volumes created during development (not in the repo, recreate if missing): `edgeflow:dev` -> `edgeflow:dev3` (Ubuntu 24.04, GCC 13, clang, cmake, ninja, git, libboost-dev, libpq-dev, postgresql-client); `edgeflow:valtools` (adds curl, netcat, python3); build volumes `ef_build` (GCC Debug), `ef_build_clang`, `ef_build_rel` (GCC Release); network `ef-net`.
 - Typical full validation: start a throwaway PostgreSQL (`postgres:16`, user/db `edgeflow`) on a Docker network, run the build container on that network with `EDGEFLOW_TEST_DB_HOST=<container>` plus optional `EDGEFLOW_TEST_DB_PORT/NAME/USER/PASSWORD`, then `cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DEDGEFLOW_WARNINGS_AS_ERRORS=ON && cmake --build /build -j2 && ctest --test-dir /build --output-on-failure`. Without `EDGEFLOW_TEST_DB_HOST` the database tests are skipped with a reason.
-- `docker build -t edgeflow:phase9 .` builds Release with `-Werror` and runs the tests (database tests skipped); `docker compose up -d --build` starts PostgreSQL + EdgeFlow with the registry, health checking, routing, the reverse proxy and reliability on (`EDGEFLOW_DB_PASSWORD` overrides the development-only default).
+- `docker build -t edgeflow:phase10 .` builds Release with `-Werror` and runs the tests (database tests skipped); `docker compose up -d --build` starts PostgreSQL + EdgeFlow with the registry, health checking, routing, the reverse proxy and reliability on (`EDGEFLOW_DB_PASSWORD` overrides the development-only default).
 - Tooling quirks: large bash heredocs can fail in this environment (write big files with an editor tool or a script file); Git Bash rewrites `/tmp/...` arguments passed to `docker exec` (set `MSYS_NO_PATHCONV=1`); poll result files that a background job writes only after the job truncated them (use a unique file per run), otherwise a stale file can be mistaken for a fresh result.
 - Do not leave test infrastructure running: remove throwaway containers, networks and volumes after a validation run.
 
-## 14. Final Target (end-of-project goal; every number is a TARGET, not an achieved result)
+## 14. Final Target — what was achieved (measured; see section 9E and `docs/PERFORMANCE.md`)
 
-By the end of Phase 10 the project should support resume bullets of this shape. **Each number must be replaced with the actual measured value, and a claim dropped or reworded if the measurements do not support it.**
+The original resume-bullet targets and what the measurements support (one 4 vCPU shared machine; use these numbers, not the targets):
 
-> **EdgeFlow — API Gateway, Service Discovery & Load Balancer** (C++, TCP/HTTP, PostgreSQL, Redis, Docker)
-> - Built a high-performance C++ API gateway supporting service discovery, health-aware routing, request forwarding, connection management, rate limiting, caching, and failover across ~10 service instances.
-> - Implemented Round Robin, Least Connections, Weighted Routing, and consistent hashing, efficiently distributing ~100K+ requests across dynamically changing backend instances.
-> - Engineered concurrent connection handling with timeouts, retries, circuit breakers, and graceful shutdown, maintaining ~99.5% availability during simulated service failures.
-> - Load-tested the gateway at ~10K requests/sec and used profiling to identify bottlenecks, reducing p95 latency from ~45 ms to ~20 ms.
-
-What this requires the project to actually produce: a 10-instance backend deployment with instances added/removed/failed dynamically during tests; a 100K+ request run across all four routing strategies with the distribution recorded; a failure-injection test (killed/slow/erroring backends) with measured availability; a ~10K RPS wrk/custom load test; and a recorded **baseline** p95 before optimization plus a re-measured p95 after Phase 10 profiling-driven fixes. **Phase 9 produced the wrk load test (about 1.8K requests/s uncached, 11.2K cached, 36K for the server alone, on a shared 4 vCPU machine); the other measurements (10 instances, 100K+ distribution, failure-injection availability, p95 before/after optimisation) do not exist yet.** Phase 5's distribution tests are correctness checks, not benchmarks.
+| target | measured |
+|---|---|
+| ~10 service instances | 10 backends, with instances added, removed, killed and hung under load |
+| ~100K+ requests | 136K-215K per strategy; 547K and 634K in the failure runs |
+| ~99.5 % availability under failures | 100.000 % (0 failed of 546,773 and of 634,001) in one gateway process |
+| ~10K requests/sec | 10.2K-10.7K for round_robin, weighted and consistent_hashing; 1.8K for least_connections |
+| p95 ~20 ms | 8.7-8.9 ms (round_robin, weighted), 20.6 ms (consistent_hashing), 45.8 ms (least_connections) |
+| profiling-driven improvement | uncached proxied path 1,935 -> 11,637 req/s (6.0x), p50 32.35 -> 5.36 ms |
 
 ## 15. Open Items
 
-- Remote GitHub Actions run: never confirmed for any phase (workflow unchanged in Phase 6; same configurations validated locally in containers).
-- Performance: the only measurements are those of section 9D / `bench/results/phase9-codespace-4cpu` (one machine type, closed-loop wrk). Still missing for the final resume bullets: availability under failure injection, a 10-instance dynamic deployment, a 100K+ request distribution run per strategy, p95 before/after optimisation.
-- Known design limitations carried forward: PostgreSQL read per routing decision and per attempt (no routing cache); circuit state per process and in memory; `/metrics` is unauthenticated; Redis is a single shared dependency (no cluster) and the limiter identifies clients by TCP peer address; one probe type and one routing strategy for all instances; `Expect: 100-continue` unsupported; buffered (not streamed) proxying; `connection_count` not reconciled after a hard kill.
+- Remote GitHub Actions run: never confirmed for any phase.
+- `least_connections` is the slow strategy (1.8K req/s, p95 45.8 ms) because its counter lives in PostgreSQL.
+- Known design limitations: circuit state per process and in memory; `/metrics` unauthenticated; no TLS; Redis is a single shared dependency and the limiter identifies clients by TCP peer address; routing snapshots can be stale up to `snapshot_ttl_ms`; `Expect: 100-continue` unsupported; buffered (not streamed) proxying; `connection_count` not reconciled after a hard kill; the Mermaid diagrams were not rendered.

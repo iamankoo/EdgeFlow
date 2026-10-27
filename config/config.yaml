@@ -46,6 +46,11 @@ health_check:
 routing:
   # Phase 5: how an instance is chosen among the routable (active AND healthy) ones.
   strategy: round_robin      # round_robin | least_connections | weighted | consistent_hashing
+  # Phase 10: keep the routable-instance list of a service for this long instead of reading
+  # PostgreSQL on every request (0 = off). A health or registry change reaches routing at most this
+  # late; an expired snapshot is never served while the database is down. Not allowed with
+  # least_connections (it needs live counts). 0..60000.
+  snapshot_ttl_ms: 0
 
 proxy:
   # Phase 6 reverse proxy: /proxy/{service}/... is forwarded to a healthy instance of
@@ -58,6 +63,11 @@ proxy:
   max_idle_connections: 32   # 0..1024; idle keep-alive connections kept per backend; 0 disables connection reuse
   idle_timeout_ms: 30000     # 10..3600000; an idle pooled connection older than this is closed, not reused
   max_response_bytes: 16777216   # 1024..268435456 (default 16 MiB); a larger backend response answers 502
+  # Phase 10: whether every proxied request writes +1/-1 to service_instances.connection_count in
+  # PostgreSQL. Only the least_connections strategy reads that number. always = as before;
+  # auto = only when routing.strategy is least_connections (measured: 2.45x throughput on the
+  # other strategies); never = never.
+  connection_counting: always   # always | auto | never
 
 reliability:
   # Phase 7 reliability engineering around the reverse proxy. Needs proxy.enabled.
@@ -146,6 +156,12 @@ metrics:
   enabled: false
   path: /metrics        # GET (or HEAD) only; never rate limited, cached or counted as traffic
   window_seconds: 10    # 1..300; sliding window of the requests/sec, error ratio and p50/p95/p99 gauges
+
+admin:
+  # Phase 10: the NAME of an environment variable holding a bearer token. When set, every request to
+  # /services needs 'Authorization: Bearer <token>' and the gateway refuses to start if the variable is
+  # empty. Empty (default) = the registry API is open (a warning is logged at startup).
+  token_env: ""
 
 shutdown:
   grace_period_seconds: 5    # 0..300; in-flight requests may finish within this time

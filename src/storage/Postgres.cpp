@@ -190,15 +190,47 @@ PgPool::Lease PgPool::acquire(std::chrono::milliseconds timeout) {
     lock.unlock();
   }
 
-  std::string error;
-  auto connection = PgConnection::connect(params_, error);
-  if (!connection) {
-    {
-      const std::lock_guard relock(mutex_);
-      --open_or_opening_;
+  // A slot is reserved. While the database is known to be unreachable, do not wait out another connect timeout.
+  {
+    std::unique_lock relock(mutex_);
+    if (backing_off_) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now < retry_at_ || probing_) {
+        --open_or_opening_;
+        const std::string reason = last_error_;
+        relock.unlock();
+        available_.notify_one();
+        lease.error_ = "cannot connect to the database: " + reason + " (not retrying yet)";
+        return lease;
+      }
+      probing_ = true;  // this thread is the one probe
     }
+  }
+
+  std::string error;
+  const auto started = std::chrono::steady_clock::now();
+  auto connection = PgConnection::connect(params_, error);
+  const auto took = std::chrono::steady_clock::now() - started;
+  {
+    const std::lock_guard relock(mutex_);
+    probing_ = false;
+    if (connection) {
+      backing_off_ = false;
+    } else {
+      --open_or_opening_;
+      if (took >= params_.slow_failure) {
+        backing_off_ = true;
+        retry_at_ = std::chrono::steady_clock::now() + params_.unreachable_backoff;
+        last_error_ = error;
+      } else {
+        backing_off_ = false;  // a quick refusal costs nothing to repeat
+      }
+    }
+  }
+  if (!connection) {
     available_.notify_one();
-    logger_->warn("database connection failed ({}:{}): {}", params_.host, params_.port, error);
+    logger_->warn("database connection failed ({}:{}) after {} ms: {}", params_.host, params_.port,
+                  std::chrono::duration_cast<std::chrono::milliseconds>(took).count(), error);
     lease.error_ = "cannot connect to the database: " + error;
     return lease;
   }

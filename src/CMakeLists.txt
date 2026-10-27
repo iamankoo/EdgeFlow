@@ -47,6 +47,7 @@ add_library(edgeflow_core STATIC
   network/HttpConnection.cpp
   network/HttpServer.cpp
   network/LocalRequestHandler.cpp
+  network/AdminAuthHandler.cpp
   network/RegistryRequestHandler.cpp
   network/TcpServer.cpp
   observability/Metrics.cpp

@@ -1,0 +1,34 @@
+before: fds=20 rss=15044 kB
+PASS  garbage request line                           -> 400
+PASS  unsupported HTTP version                       -> 400
+PASS  unknown method                                 -> 405
+PASS  20 KB request target                           -> 431
+PASS  header block over max_header_bytes             -> 431 (expect 431)
+PASS  5000 headers                                   -> 431
+PASS  Content-Length over max_request_body_bytes     -> 413 (expect 413, no body sent)
+PASS  two different Content-Length headers           -> 400
+PASS  Content-Length + Transfer-Encoding (smuggling) -> 400
+PASS  negative Content-Length                        -> 400
+PASS  NUL byte in the request target                 -> 400
+PASS  space in a header name                         -> 400
+PASS  malformed chunk size                           -> 400
+PASS  odd path /proxy/                               -> 400
+PASS  odd path /proxy//                              -> 400
+PASS  odd path /proxy/nosuch/x                       -> 404
+PASS  odd path /proxy/../../etc/passwd               -> 400
+PASS  odd path /services/..%2f..%2fetc               -> 404
+PASS  odd path /proxy/%00/x                          -> 400
+PASS  odd path /services/a%0d%0aX-Evil:1/instances   -> 400
+PASS  giant X-Forwarded-For                          -> 431
+PASS  slowloris (header never finished)              closed after 2.0s -> 408 (request_timeout 2.0s)
+PASS  idle keep-alive connection is closed           closed after 3.0s idle (keep_alive_timeout 3.0s)
+PASS  body that never completes                      closed after 2.0s -> 408
+PASS  more idle connections than max_connections     opened 300, closed by the server beyond the limit: 96, /health while full: True
+PASS  serving again once the idle connections are gone 
+PASS  3000 pipelined requests in one write           3000/3000 answered in 0.15s
+PASS  500 connections opened and abandoned (some with RST) 
+after:  fds=20 rss=15900 kB  (fds +0, rss +856 kB)
+PASS  no file-descriptor leak                        fds 20 -> 20
+
+29/29 checks passed
+--- gateway log lines at warn/error level during the run

@@ -94,7 +94,8 @@ std::string_view publicDetail(const discovery::RegistryError& error) {
 // The count of an attempt is released before the next attempt starts and before any response
 // is handed back. Without a ReliabilityManager the loop runs exactly once (Phase 6).
 //
-// Threads: attempt()/endAttempt() run on the lookup pool (they may block on PostgreSQL),
+// Threads: attempt()/endAttempt() run on the lookup pool (they may block on PostgreSQL) unless nothing in them
+// can block (no counter writes, routing from a fresh kept snapshot): then they run inline (Phase 10),
 // forward()/onUpstream() on the upstream I/O threads, the backoff timer on this operation's
 // own strand. No lock is held across any of that; `mutex_` guards only the few fields that
 // cancel() touches from other threads.
@@ -116,9 +117,17 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
         strand_(net::make_strand(owner.io_)),
         done_(std::move(done)) {}
 
-  // Hands the registry work (routing + counter increment) to the lookup pool.
+  // The registry work (routing, counter increments) normally runs on the lookup pool because it blocks on
+  // PostgreSQL. When nothing can block (no counter writes, and routing is answered from a fresh kept
+  // snapshot) the first attempt runs right here instead, which saves two thread hand-offs per request
+  // (Phase 10 profile: futex calls were 77 % of the syscall time). If the snapshot is not fresh the attempt
+  // goes to the pool as before.
   void start() {
-    net::post(owner_.lookup_pool_, [self = shared_from_this()] { self->attempt(); });
+    if (owner_.nonBlockingAttempts()) {
+      attempt(/*may_block=*/false);
+    } else {
+      net::post(owner_.lookup_pool_, [self = shared_from_this()] { self->attempt(true); });
+    }
   }
 
   // Thread-safe, idempotent. The client went away, or the proxy is stopping.
@@ -153,10 +162,14 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
 
   // --- one attempt: choose a backend (lookup thread: may block on PostgreSQL) ---
 
-  discovery::Result<discovery::ServiceInstance> chooseBackend(
-      const std::set<std::string>& refused) {
+  // nullopt: the choice would have to read the registry and `may_block` is false (see start()).
+  std::optional<discovery::Result<discovery::ServiceInstance>> chooseBackend(
+      const std::set<std::string>& refused, bool may_block) {
     const routing::RoutingContext context{client_address_};
-    if (rel_ == nullptr) return owner_.router_->route(route_.service, context);
+    if (rel_ == nullptr) {
+      if (!may_block) return owner_.router_->routeIfKept(route_.service, context, nullptr);
+      return owner_.router_->route(route_.service, context);
+    }
 
     reliability::CircuitBreakerRegistry* breakers = rel_->breakers();
     routing::Router::Filter filter;
@@ -175,10 +188,11 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
       return !ledger_.tried(reliability::backendKey(instance.service, instance.instance_id,
                                                     instance.host, instance.port));
     };
+    if (!may_block) return owner_.router_->routeIfKept(route_.service, context, &filter);
     return owner_.router_->route(route_.service, context, filter);
   }
 
-  void attempt() {
+  void attempt(bool may_block) {
     if (isCancelled()) {
       finish(failure(http::status::service_unavailable, "the request was cancelled"));
       return;
@@ -192,7 +206,14 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
     counted_ = false;
     std::set<std::string> refused;  // circuits that turned this request down just now
     for (unsigned tries = 1;; ++tries) {
-      auto routed = chooseBackend(refused);
+      auto routed_or_deferred = chooseBackend(refused, may_block);
+      if (!routed_or_deferred) {
+        // Not answerable without reading the registry: do it where blocking is allowed. Nothing has been
+        // taken yet (no admission, no count), so the whole attempt simply starts again there.
+        net::post(owner_.lookup_pool_, [self = shared_from_this()] { self->attempt(true); });
+        return;
+      }
+      auto& routed = *routed_or_deferred;
       if (!routed.ok()) {
         routingFailed(routed.error());
         return;
@@ -234,13 +255,15 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
 
     // From here on this attempt counts as one active connection of the chosen instance, until
     // endAttempt().
-    const auto adjusted =
-        owner_.registry_->adjustConnectionCount(instance_.service, instance_.instance_id, 1);
-    if (adjusted.ok()) {
-      counted_ = true;
-    } else {
-      owner_.logger_->warn("proxy [{}]: cannot count the request against {}/{}: {}", request_id_,
-                           instance_.service, instance_.instance_id, adjusted.error().message);
+    if (owner_.count_connections_) {
+      const auto adjusted =
+          owner_.registry_->adjustConnectionCount(instance_.service, instance_.instance_id, 1);
+      if (adjusted.ok()) {
+        counted_ = true;
+      } else {
+        owner_.logger_->warn("proxy [{}]: cannot count the request against {}/{}: {}", request_id_,
+                             instance_.service, instance_.instance_id, adjusted.error().message);
+      }
     }
     net::post(owner_.io_, [self = shared_from_this()] { self->forward(); });
   }
@@ -252,7 +275,7 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
       owner_.logger_->warn("proxy [{}] {} {} (service {}): no backend left for another attempt "
                            "({}): {}",
                            request_id_, std::string_view{request_.method_string()},
-                           std::string_view{request_.target()}, route_.service,
+                           network::loggableTarget(request_.target()), route_.service,
                            discovery::toString(error.code), error.message);
       if (rel_ != nullptr) rel_->noteExhausted();
       finishWith(result_);
@@ -317,6 +340,10 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
       call_.reset();
     }
     result_ = std::move(result);
+    if (!owner_.count_connections_) {
+      endAttempt();  // nothing in it blocks without the counter write: no hand-off needed
+      return;
+    }
     // Releasing the count blocks on PostgreSQL: not on this I/O thread.
     net::post(owner_.lookup_pool_, [self = shared_from_this()] { self->endAttempt(); });
   }
@@ -408,7 +435,7 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
       owner_.logger_->warn("proxy [{}] {} {}: no time budget left for another attempt after {}ms "
                            "of backoff; answering with the last result",
                            request_id_, std::string_view{request_.method_string()},
-                           std::string_view{request_.target()}, delay.count());
+                           network::loggableTarget(request_.target()), delay.count());
       rel_->noteExhausted();
       finishWith(result_);
       return;
@@ -416,7 +443,7 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
     owner_.logger_->info("proxy [{}] {} {} (service {}): attempt {} of {} failed ({}); retrying "
                          "in {}ms",
                          request_id_, std::string_view{request_.method_string()},
-                         std::string_view{request_.target()}, route_.service, attempts_made_,
+                         network::loggableTarget(request_.target()), route_.service, attempts_made_,
                          rel_->maxAttempts(), reliability::toString(kind), delay.count());
     scheduleRetry(delay);
   }
@@ -443,7 +470,11 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
                                      "the request was cancelled"));
           return;
         }
-        net::post(self->owner_.lookup_pool_, [self] { self->attempt(); });
+        if (self->owner_.nonBlockingAttempts()) {
+          self->attempt(/*may_block=*/false);
+        } else {
+          net::post(self->owner_.lookup_pool_, [self] { self->attempt(true); });
+        }
       });
     });
   }
@@ -484,7 +515,7 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
     if (result_.ok()) {
       owner_.logger_->debug("proxy [{}]{} {} {} -> {}/{} {}:{}: {} in {}ms{}{}{}", request_id_,
                             attempt_text, std::string_view{request_.method_string()},
-                            std::string_view{request_.target()}, instance_.service,
+                            network::loggableTarget(request_.target()), instance_.service,
                             instance_.instance_id, instance_.host, instance_.port,
                             result_.response.result_int(), elapsedMs(),
                             result_.reused_connection ? " (reused connection)" : "",
@@ -506,14 +537,14 @@ class ProxyHandler::Operation : public std::enable_shared_from_this<Operation> {
     if (!instance_.instance_id.empty()) {
       owner_.logger_->warn("proxy [{}] {} {} -> {}/{} {}:{}: {} ({}) in {}ms", request_id_,
                            std::string_view{request_.method_string()},
-                           std::string_view{request_.target()}, instance_.service,
+                           network::loggableTarget(request_.target()), instance_.service,
                            instance_.instance_id, instance_.host, instance_.port, what,
                            static_cast<unsigned>(status), elapsedMs());
       return;
     }
     // No backend was chosen: a client mistake (4xx) is informational, an outage is not.
     const auto text = std::string{std::string_view{request_.method_string()}} + " " +
-                      std::string{std::string_view{request_.target()}};
+                      network::loggableTarget(request_.target());
     if (status >= http::status::internal_server_error) {
       owner_.logger_->warn("proxy [{}] {} (service {}): {} ({})", request_id_, text,
                            route_.service, what, static_cast<unsigned>(status));
@@ -584,6 +615,9 @@ ProxyHandler::ProxyHandler(std::shared_ptr<network::RequestHandler> next,
       config_(config),
       reliability_(std::move(reliability)),
       logger_(std::move(logger)),
+      count_connections_(config.connection_counting == config::ConnectionCounting::Always ||
+                         (config.connection_counting == config::ConnectionCounting::Auto &&
+                          router_->strategy() == "least_connections")),
       io_(static_cast<int>(config.io_threads)),
       work_guard_(std::make_unique<WorkGuard>(io_.get_executor())),
       pool_(std::make_shared<UpstreamPool>(
@@ -608,9 +642,12 @@ ProxyHandler::ProxyHandler(std::shared_ptr<network::RequestHandler> next,
     });
   }
   logger_->info("reverse proxy ready: /proxy/{{service}}/..., connect timeout {}ms, upstream "
-                "timeout {}ms, up to {} idle connection(s) per backend, {} I/O thread(s)",
+                "timeout {}ms, up to {} idle connection(s) per backend, {} I/O thread(s), connection "
+                "counting {} ({})",
                 config_.connect_timeout.count(), config_.upstream_timeout.count(),
-                config_.max_idle_connections, config_.io_threads);
+                config_.max_idle_connections, config_.io_threads,
+                config::toString(config_.connection_counting),
+                count_connections_ ? "registry writes per request" : "no registry writes per request");
   if (reliability_) {
     const auto& r = reliability_->config();
     logger_->info("reliability ready: total timeout {}ms, retries {} (up to {} attempt(s), "
@@ -650,7 +687,7 @@ network::CancelFunction ProxyHandler::handleAsync(const HttpRequest& request,
   auto mapped = mapProxyTarget(request.target());
   if (!mapped.route) {
     logger_->info("proxy [{}] {} {}: rejected: {}", request_id,
-                  std::string_view{request.method_string()}, std::string_view{request.target()},
+                  std::string_view{request.method_string()}, network::loggableTarget(request.target()),
                   mapped.detail);
     done(makeGatewayError(request, http::status::bad_request, mapped.detail, request_id));
     return {};

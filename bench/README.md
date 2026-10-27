@@ -7,6 +7,9 @@ was measured on one machine; none of it is a promise about another.
 |---|---|---|---|
 | micro-benchmarks | the CPU cost of one function on the request path | Google Benchmark | `bench/micro` |
 | load tests | requests/sec and latency of a running gateway under concurrent HTTP load | wrk | `bench/load` |
+| profiling and A/B (Phase 10) | where a request spends its time (CPU, locks, PostgreSQL, Redis, network, memory) and whether a change helped | perf, FlameGraph, strace, pidstat, `pg_stat_statements`, wrk | `bench/profile` |
+| final benchmark (Phase 10) | ten backends, every routing strategy at 100,000+ requests with the per-backend distribution, membership changes and failure injection | wrk (Lua report), `docker` | `bench/final` |
+| hardening tests (Phase 10) | malformed input, resource exhaustion, dependency outages, shutdown under load against a running gateway | python3, curl, docker | `bench/hardening` |
 
 ## Micro-benchmarks
 
@@ -25,7 +28,7 @@ statistics, `/metrics` rendering). Results of the run documented in `summary.md`
 ## Load test
 
 Needs Docker with Compose, `wrk`, `curl` and `python3`, and the EdgeFlow image
-(`docker build -t edgeflow:phase9 .`).
+(`docker build -t edgeflow:phase10 .`).
 
 ```bash
 bench/load/run.sh my-label                  # about 6 minutes: 4 scenarios x (5 s warm-up + 3 x 20 s)
@@ -84,3 +87,52 @@ The ~10K requests/s target of `Phases.md` was therefore **reached only for cache
 machine; an uncached proxied request, which costs three PostgreSQL round trips plus a Redis script
 and the proxy exchange, ran at about 1.8K requests/s. Understanding and improving that is the work of
 Phase 10 (profiling and optimisation); no optimisation was made in Phase 9.
+
+The Phase 9 run above is kept as the **before** of Phase 10. The **after**, and everything measured in Phase 10, is
+below and in [`../docs/PERFORMANCE.md`](../docs/PERFORMANCE.md).
+
+## Profiling and A/B comparison (Phase 10)
+
+```bash
+# profile a native gateway under load (needs docker, wrk, perf, strace, sysstat, python3, sudo)
+EDGEFLOW_IMAGE=edgeflow:phase10 PERF=perf FLAMEGRAPH_DIR=/opt/FlameGraph bench/profile/profile.sh my-profile build-prof/src/edgeflow
+
+# compare two builds / configurations in the same run (variant = name|binary|proxy opts|routing opts|server opts|db opts)
+VARIANTS=$'before|/path/old||
+after|/path/new|connection_counting: auto|snapshot_ttl_ms: 250' bench/profile/ab.sh my-ab
+```
+
+`bench/profile/lib.sh` starts PostgreSQL (with `pg_stat_statements`), Redis and the backends as containers and
+reaches them by their bridge IP addresses (a published port goes through `docker-proxy`, which distorted the
+first profile); the gateway is a native process. Results of the Phase 10 runs, all committed:
+
+| directory | what |
+|---|---|
+| `results/phase10-baseline/` | the Phase 9 gateway in this harness (S1/S2/S3), plus its flamegraph |
+| `results/phase10-o1/` | `connection_counting: auto` against the baseline (S2: 1,929 -> 4,732 req/s) |
+| `results/phase10-o2/` | `routing.snapshot_ttl_ms: 250` (S2: 4,755 -> 8,269) |
+| `results/phase10-o3/` | inline attempts (S2: 8,258 -> 11,637) |
+| `results/phase10-o4/` | `TCP_NODELAY` on accepted sockets: no effect, reverted; context switches per request |
+| `results/phase10-profile-o1/`, `phase10-profile-o2/` | CPU, threads, `futex`, PostgreSQL and Redis profiles after the first two steps (`cpu.svg` is a flamegraph) |
+| `results/phase10-hardening-abuse/` | `abuse.sh`: 29 malformed-input / exhaustion checks |
+
+## Final benchmark (Phase 10)
+
+```bash
+EDGEFLOW_IMAGE=edgeflow:phase10 bench/final/run.sh my-final build/src/edgeflow     # about 12 minutes
+python3 bench/final/report.py my-final                                              # writes results/my-final/report.md
+```
+
+Part 1 runs each routing strategy against ten backends for long enough to exceed 100,000 requests and records every
+backend's own request count (the backends run `bench/final/backend.yaml`, which turns `/metrics` on). Part 2 runs a
+66-second scenario against ten backends twice (`proxy.upstream_timeout_ms` 10000 and 1000): kill and restart a
+backend, pause one (it accepts connections and never answers), add one, remove one, add one that passes its health check
+and answers every request with 503, and remove it; wrk's percentiles come from `percentiles.lua` (p95 is not in
+`--latency`). Committed result: [`results/phase10-final-benchmark/report.md`](results/phase10-final-benchmark/report.md).
+
+## Hardening tests (Phase 10)
+
+```bash
+bench/hardening/abuse.sh my-abuse build/src/edgeflow        # 29 checks: malformed requests, slow clients, connection exhaustion, pipelining, fd leak
+bench/hardening/failures.sh my-failures build/src/edgeflow  # Redis down/up, PostgreSQL down/up, SIGTERM with a request in flight
+```

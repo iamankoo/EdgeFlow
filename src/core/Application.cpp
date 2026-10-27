@@ -9,6 +9,7 @@
 
 #include "edgeflow/cache/ResponseCache.hpp"
 #include "edgeflow/discovery/PostgresServiceRegistry.hpp"
+#include "edgeflow/network/AdminAuthHandler.hpp"
 #include "edgeflow/network/RegistryRequestHandler.hpp"
 #include "edgeflow/observability/MetricsHandler.hpp"
 #include "edgeflow/ratelimit/RateLimiter.hpp"
@@ -130,10 +131,25 @@ bool Application::initializeRegistry(std::shared_ptr<network::RequestHandler>& h
     return false;
   }
   registry_ = std::make_shared<discovery::PostgresServiceRegistry>(std::move(pool), logger_);
-  router_ = std::make_shared<routing::Router>(registry_,
-                                              routing::makeLoadBalancer(config_.routing.strategy));
+  router_ = std::make_shared<routing::Router>(
+      registry_, routing::makeLoadBalancer(config_.routing.strategy),
+      routing::Router::Options{config_.routing.snapshot_ttl, {}});
   handler = std::make_shared<network::RegistryRequestHandler>(registry_, std::move(handler), logger_,
                                                                router_);
+  if (!config_.admin.token_env.empty()) {
+    // Fail closed: asking for protection and not providing the token must not leave the API open.
+    const char* token = std::getenv(config_.admin.token_env.c_str());
+    if (token == nullptr || *token == '\0') {
+      logger_->error("admin.token_env names {}, which is not set or empty; refusing to start with an "
+                     "unprotected registry API", config_.admin.token_env);
+      return false;
+    }
+    handler = std::make_shared<network::AdminAuthHandler>(std::move(handler), token);
+    logger_->info("registry API protected: /services requires a bearer token from {}", config_.admin.token_env);
+  } else {
+    logger_->warn("registry API is not protected (admin.token_env is not set): anyone who can reach this "
+                  "port can register, change or remove instances");
+  }
   logger_->info("service registry ready (PostgreSQL {}:{}/{}, {} migration(s) applied, "
                 "pool size {}), routing strategy {}", db.host, db.port, db.name, report.applied,
                 db.pool_size, router_->strategy());
@@ -276,6 +292,18 @@ void Application::registerMetricsCollectors() {
         }
       });
     }
+  }
+
+  // Routing: how often the routable set was read from the registry and how often a kept snapshot served.
+  if (router_) {
+    metrics_->addCollector([this](MetricsWriter& w) {
+      const auto stats = router_->stats();
+      w.counter("edgeflow_routing_snapshots_total",
+                "Routing decisions by where the routable set came from: a snapshot kept for routing.snapshot_ttl_ms (hit) "
+                "or a read from the registry (read).",
+                {{Labels{{"source", "snapshot"}}, stats.snapshot_hits},
+                 {Labels{{"source", "registry"}}, stats.snapshot_reads}});
+    });
   }
 
   // Rate limiting, the response cache and Redis.

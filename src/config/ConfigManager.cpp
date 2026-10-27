@@ -364,7 +364,7 @@ void parseHealthCheck(const YAML::Node& root, HealthCheckConfig& out, Errors& er
 
 void parseRouting(const YAML::Node& root, RoutingConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "routing", errors);
-  rejectUnknownKeys(section, "routing", {"strategy"}, errors);
+  rejectUnknownKeys(section, "routing", {"strategy", "snapshot_ttl_ms"}, errors);
 
   if (auto strategy = readString(section, "routing", "strategy", errors)) {
     if (*strategy == "round_robin") {
@@ -380,13 +380,20 @@ void parseRouting(const YAML::Node& root, RoutingConfig& out, Errors& errors) {
                        "weighted, consistent_hashing (got '" + *strategy + "')");
     }
   }
+  if (auto v = readBounded(section, "routing", "snapshot_ttl_ms", 0, 60000, errors)) {
+    out.snapshot_ttl = std::chrono::milliseconds{*v};
+  }
+  if (out.snapshot_ttl.count() > 0 && out.strategy == RoutingStrategy::LeastConnections) {
+    errors.push_back("'routing.snapshot_ttl_ms' must be 0 with routing.strategy least_connections: that strategy "
+                     "reads the live connection counts, which a kept snapshot would make up to snapshot_ttl_ms old");
+  }
 }
 
 void parseProxy(const YAML::Node& root, ProxyConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "proxy", errors);
   rejectUnknownKeys(section, "proxy",
                     {"enabled", "connect_timeout_ms", "upstream_timeout_ms", "io_threads",
-                     "max_idle_connections", "idle_timeout_ms", "max_response_bytes"},
+                     "max_idle_connections", "idle_timeout_ms", "max_response_bytes", "connection_counting"},
                     errors);
 
   if (auto enabled = readString(section, "proxy", "enabled", errors)) {
@@ -421,8 +428,19 @@ void parseProxy(const YAML::Node& root, ProxyConfig& out, Errors& errors) {
                            kMaxResponseBytes, errors)) {
     out.max_response_bytes = static_cast<std::size_t>(*v);
   }
+  if (auto counting = readString(section, "proxy", "connection_counting", errors)) {
+    if (*counting == "always") {
+      out.connection_counting = ConnectionCounting::Always;
+    } else if (*counting == "auto") {
+      out.connection_counting = ConnectionCounting::Auto;
+    } else if (*counting == "never") {
+      out.connection_counting = ConnectionCounting::Never;
+    } else {
+      errors.push_back("'proxy.connection_counting' must be always, auto or never (got '" + *counting + "')");
+    }
+  }
   if (out.connect_timeout > out.upstream_timeout) {
-    errors.push_back("'proxy.connect_timeout_ms' (" + std::to_string(out.connect_timeout.count()) +
+    errors.push_back("'proxy.connect_timeout_ms' ("+ std::to_string(out.connect_timeout.count()) +
                      ") must not exceed 'proxy.upstream_timeout_ms' (" +
                      std::to_string(out.upstream_timeout.count()) + ")");
   }
@@ -846,6 +864,19 @@ void parseMetrics(const YAML::Node& root, MetricsConfig& out, Errors& errors) {
   }
 }
 
+void parseAdmin(const YAML::Node& root, AdminConfig& out, Errors& errors) {
+  const YAML::Node section = sectionOf(root, "admin", errors);
+  rejectUnknownKeys(section, "admin", {"token_env"}, errors);
+  if (auto name = readString(section, "admin", "token_env", errors)) {
+    if (name->empty() || isValidEnvName(*name)) {
+      out.token_env = *name;
+    } else {
+      errors.push_back("'admin.token_env' must be the NAME of an environment variable "
+                       "([A-Za-z_][A-Za-z0-9_]*), never the token itself");
+    }
+  }
+}
+
 void parseShutdown(const YAML::Node& root, ShutdownConfig& out, Errors& errors) {
   const YAML::Node section = sectionOf(root, "shutdown", errors);
   rejectUnknownKeys(section, "shutdown", {"grace_period_seconds"}, errors);
@@ -917,7 +948,7 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
   Errors errors;
   rejectUnknownKeys(root, "",
                     {"application", "server", "database", "health_check", "routing", "proxy",
-                     "reliability", "redis", "cache", "rate_limit", "metrics", "shutdown"},
+                     "reliability", "redis", "cache", "rate_limit", "metrics", "admin", "shutdown"},
                     errors);
   parseApplication(root, parsed.application, errors);
   parseServer(root, parsed.server, errors);
@@ -956,6 +987,7 @@ bool ConfigManager::loadFromString(std::string_view yaml, std::string_view sourc
                      "rate limited");
   }
   parseMetrics(root, parsed.metrics, errors);
+  parseAdmin(root, parsed.admin, errors);
   parseShutdown(root, parsed.shutdown, errors);
 
   if (!errors.empty()) {
@@ -991,6 +1023,15 @@ std::string_view toString(RoutingStrategy strategy) noexcept {
     case RoutingStrategy::ConsistentHashing: return "consistent_hashing";
   }
   return "round_robin";
+}
+
+std::string_view toString(ConnectionCounting counting) noexcept {
+  switch (counting) {
+    case ConnectionCounting::Always: return "always";
+    case ConnectionCounting::Auto: return "auto";
+    case ConnectionCounting::Never: return "never";
+  }
+  return "always";
 }
 
 std::string_view toString(RateLimitFailurePolicy policy) noexcept {

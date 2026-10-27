@@ -1,0 +1,13 @@
+Running 20s test @ http://127.0.0.1:8080/proxy/bench/
+  2 threads and 64 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    13.91ms    2.86ms  43.51ms   80.93%
+    Req/Sec     2.31k   223.70     2.66k    85.50%
+  Latency Distribution
+     50%   13.50ms
+     75%   14.88ms
+     90%   16.88ms
+     99%   24.74ms
+  92001 requests in 20.03s, 20.88MB read
+Requests/sec:   4592.41
+Transfer/sec:      1.04MB

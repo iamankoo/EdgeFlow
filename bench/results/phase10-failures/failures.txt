@@ -1,0 +1,40 @@
+gateway pid 69957, fds before: 20
+PASS  baseline: 20 uncached requests  20/20 answered 200
+PASS  baseline: cache HIT  X-Cache: HIT
+--- 1. Redis stops
+PASS  Redis down: uncached requests still served  50/50 answered 200 in 0.63s
+PASS  Redis down: cacheable URL is served by the backend instead  20/20 answered 200
+PASS  Redis down: edgeflow_redis_up  edgeflow_redis_up 0
+--- 2. Redis comes back
+PASS  Redis back: edgeflow_redis_up  edgeflow_redis_up 1 after 3s
+PASS  Redis back: cache serves again  X-Cache: HIT
+--- 3. PostgreSQL stops
+PASS  PostgreSQL down: a cached answer is still served  HTTP 200, X-Cache: HIT
+PASS  PostgreSQL down: burst 1, 50 concurrent uncached requests, all answered 503 within one connect timeout  50/50 were 503, all done in 5.04s
+PASS  PostgreSQL down: burst 2 fails at once instead of waiting again  50/50 were 503, 50/50 in under 1 s, all done in 0.15s
+PASS  PostgreSQL down: /health still answers  HTTP 200
+PASS  PostgreSQL down: the registry API answers 503, not a hang  HTTP 503
+--- 4. PostgreSQL comes back
+PASS  PostgreSQL back: proxying works again with no gateway restart  30/30 answered 200, first success after 2s
+PASS  PostgreSQL back: the registry API answers 200  HTTP 200
+--- 5. SIGTERM with a request in flight
+PASS  SIGTERM: the in-flight request (3 s backend) completed  HTTP 200 after 3.002197s
+PASS  SIGTERM: no new connection is served while draining  GET /health during shutdown -> '000'
+PASS  SIGTERM: the process exited with code 0 within the grace period  exit code 0, 2.01s after SIGTERM
+--- shutdown log
+2026-10-26 21:16:17.010 [info] [edgeflow-bench] shutdown requested (SIGTERM)
+2026-10-26 21:16:17.010 [info] [edgeflow-bench] shutdown sequence started (grace period 5s)
+2026-10-26 21:16:17.010 [info] [edgeflow-bench] stopping component 'http-server'
+2026-10-26 21:16:17.010 [info] [edgeflow-bench] HTTP server stopping: no longer accepting connections
+2026-10-26 21:16:19.008 [info] [edgeflow-bench] HTTP server stopped (257 connection(s) served, 0 rejected)
+2026-10-26 21:16:19.008 [info] [edgeflow-bench] stopping component 'health-checker'
+2026-10-26 21:16:19.009 [info] [edgeflow-bench] health checker stopped (24 probe(s) run, 3 state change(s))
+2026-10-26 21:16:19.009 [info] [edgeflow-bench] stopping component 'reverse-proxy'
+2026-10-26 21:16:19.009 [info] [edgeflow-bench] reverse proxy stopped
+2026-10-26 21:16:19.009 [info] [edgeflow-bench] stopping component 'redis'
+2026-10-26 21:16:19.010 [info] [edgeflow-bench] stopping component 'signal-handlers'
+2026-10-26 21:16:19.010 [info] [edgeflow-bench] shutdown completed
+--- 6. descriptors
+PASS  no descriptor leak across five more Redis outages (after one warm-up outage)  fds 21 -> 21
+
+ALL CHECKS PASSED

@@ -1,0 +1,8 @@
+t=5s KILL b1 (docker kill: connection refused from now on)
+t=16s START b1 again (address 172.17.0.5; registered 172.17.0.5)
+t=22s PAUSE b2 (accepts connections but never answers)
+t=34s UNPAUSE b2
+t=40s ADD b11 -> HTTP 201
+t=40s REMOVE b3 -> HTTP 204
+t=46s ADD bad (health check passes, every request answers 503) -> HTTP 201
+t=56s REMOVE bad -> HTTP 204

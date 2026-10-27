@@ -1,6 +1,6 @@
 # EdgeFlow — Architecture
 
-> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation), 18 (Phase 2: networking engine), 19 (Phase 3: service discovery and registry) and 20 (Phase 4: health checking), 21 (Phase 5: load balancing) and 22 (Phase 6: reverse proxy) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
+> **Status:** Sections 1-16 describe the **target architecture**. Only what sections 17 (Phase 1: foundation), 18 (Phase 2: networking engine), 19 (Phase 3: service discovery and registry) and 20 (Phase 4: health checking), 21 (Phase 5: load balancing) and 22 (Phase 6: reverse proxy), 23 (Phase 7: reliability), 24 (Phase 8: Redis cache and rate limiting), 25 (Phase 9: observability) and 26 (Phase 10: optimization and hardening) describe is implemented; everything else is introduced phase by phase according to [Phases.md](Phases.md).
 
 ## 1. High-Level Architecture
 
@@ -750,7 +750,7 @@ Definitions that matter when reading them: an *error* is a 5xx the client receiv
 
 ### The endpoint
 
-`GET` (or `HEAD`) on `metrics.path` (default `/metrics`, same port as everything else). It is answered above the rate limiter and the cache, so a bucket never refuses a scrape and a scrape never appears as traffic; other methods get `405` with `Allow: GET, HEAD`. It is **unauthenticated and exposes internals**: enable it only on a trusted network (hardening is Phase 10). Off by default (`metrics.enabled`). A custom request handler passed to `Application` is used exactly as given, without metrics.
+`GET` (or `HEAD`) on `metrics.path` (default `/metrics`, same port as everything else). It is answered above the rate limiter and the cache, so a bucket never refuses a scrape and a scrape never appears as traffic; other methods get `405` with `Allow: GET, HEAD`. It is **unauthenticated and exposes internals**: enable it only on a trusted network (Phase 10 added optional bearer-token protection for the registry API only; see section 26). Off by default (`metrics.enabled`). A custom request handler passed to `Application` is used exactly as given, without metrics.
 
 ### Test strategy (what Phase 9 added and how the categories are covered)
 
@@ -777,3 +777,57 @@ Definitions that matter when reading them: an *error* is a 5xx the client receiv
 - Per-service, per-backend or per-route labels are deliberately absent (label cardinality follows the registry); a per-backend view needs a bounded design (Phase 10 or later).
 - No tracing beyond the request id in the logs, no push gateway, no exemplars, no authentication on `/metrics`.
 - Only the gateway's own view is measured; the load test's client-side latency comes from wrk.
+
+## 26. Phase 10 Implementation: Optimization, Production Hardening & Release
+
+The request path is drawn in [docs/FLOWCHART.md](docs/FLOWCHART.md); the measurements behind every change are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md); the security review is in [docs/SECURITY.md](docs/SECURITY.md). This section records the design of what changed.
+
+### Implemented in Phase 10
+
+- **Profiling harness** (`bench/profile/`): CPU (perf + FlameGraph), threads, `futex` counts, PostgreSQL statement statistics and waits, Redis command statistics, network counters and memory, against a native gateway process with the services reached by container IP (no `docker-proxy`). `ab.sh` runs same-machine A/B comparisons of builds and configurations.
+- **Three measured optimizations** (all opt-in by configuration, defaults unchanged): `proxy.connection_counting`, `routing.snapshot_ttl_ms`, and inline attempts (no thread hand-off when nothing can block). One tried and reverted (`TCP_NODELAY` on accepted sockets: no measurable effect).
+- **Hardening:** optional bearer-token protection of the registry API (`admin.token_env`), query strings and credentials kept out of logs, loopback-only port publishing and resource limits in Compose, a stripped image, abuse tests against a running gateway (`bench/hardening/abuse.sh`, `failures.sh`).
+- **Final benchmark** with ten backends, every strategy, and failure injection (`bench/final/`), and the **interview demonstration** (`demo/`, [docs/DEMO.md](docs/DEMO.md)).
+
+### Connection counting policy (`proxy.connection_counting: always | auto | never`)
+
+`connection_count` is maintained for one reader only: the `least_connections` strategy. Writing it costs two PostgreSQL row updates per proxied request, on a handful of hot rows (the profile: 86.7 % of PostgreSQL's execution time at 0.3 ms per call, with transaction-id lock waits). `always` (default) keeps Phase 6 behaviour; `auto` counts only when the configured strategy reads the count; `never` never counts. `ProxyHandler` computes `count_connections_` once at construction and guards the `+1` with it; the `-1` is already guarded by the per-operation `counted_` flag, so a request that was never counted never releases anything. The startup log states the mode.
+
+### Routing snapshot (`routing.snapshot_ttl_ms`, 0 to 60000, default 0 = off)
+
+`routing::Router` keeps, per service, the last non-empty routable list as `shared_ptr<const vector<ServiceInstance>>` with its fetch time, in a map behind one mutex that is held only to look up or replace an entry (never across a registry read). `snapshot()` returns the kept list while it is younger than the interval, otherwise reads the registry (outside the lock) and keeps the result **if it is non-empty**. Consequences, each covered by tests:
+
+- PostgreSQL remains the source of truth; the interval is a *bounded staleness*: a health change reaches routing at most that late.
+- Errors and empty answers are never kept: an outage is not extended by the cache (an expired snapshot is not served while the database is down; the request gets 503) and a service that recovers is routable at once.
+- With a filter (the reliability layer's circuit and failover decisions), the common case in which every instance is eligible and preferred routes straight over the shared list with no copy; otherwise it builds the candidate list as before.
+- `least_connections` is refused together with `snapshot_ttl_ms > 0` (it needs live counts); a configuration error says so.
+- `edgeflow_routing_snapshots_total{source="snapshot|registry"}` shows how often each source answered.
+
+### Inline attempts (no thread hand-off)
+
+Until Phase 9 every proxied request was posted to the registry-call pool (because routing and the counter writes block on PostgreSQL) and its end was posted there again. When `nonBlockingAttempts()` holds (`!count_connections_ && router.keepsSnapshots()`), `start()` runs the first `attempt()` on the calling I/O thread using `Router::routeIfKept()`, which answers only from a fresh snapshot and never reads the registry. If there is no fresh snapshot the whole attempt is posted to the pool exactly as before (nothing has been taken yet, so it simply starts again there). `onUpstream()` runs `endAttempt()` inline when nothing in it can block (no counter to release), and the backoff timer re-enters through the same rule. The thread model is therefore unchanged in the worst case and one hop (not three) in the common one.
+
+### Hardening
+
+- `admin.token_env` names an environment variable holding a bearer token. `network::AdminAuthHandler` wraps the registry handler: every request to `/services` and below needs `Authorization: Bearer <token>`, compared in constant time; otherwise `401` with `WWW-Authenticate: Bearer`, before the registry is touched. Everything else (`/health`, `/metrics`, `/proxy`) is untouched. If the variable is named but empty the gateway **refuses to start** (fail closed); with no name a warning is logged at startup that the registry API is open.
+- `network::loggableTarget()` replaces the query string of a request target by `?<query omitted>` and cuts the path at 200 characters in every log line that names a target; credentials in headers were never logged.
+- Compose publishes the gateway only on `127.0.0.1` by default (`EDGEFLOW_BIND` to change), gives it `pids_limit`, a memory limit and a `tmpfs` for `/tmp`, on top of the existing non-root user, read-only root filesystem, `cap_drop: ALL` and `no-new-privileges`. PostgreSQL and Redis publish no port. The binary in the image is stripped.
+
+### Configuration added
+
+| key | default | meaning |
+|---|---|---|
+| `proxy.connection_counting` | `always` | `always`, `auto`, `never` (above) |
+| `routing.snapshot_ttl_ms` | `0` | 0-60000; not with `least_connections` |
+| `admin.token_env` | empty | name of the environment variable holding the registry API token |
+
+### Validation
+
+828 tests (42 new) pass in GCC Debug, GCC Release and Clang 18 with PostgreSQL and Redis when run serially; the image build runs them without the services (703 pass, 125 skipped, 0 failed). ASan+UBSan and TSan are clean on the 541 concurrency-relevant tests; the previously flaky `closedPort()` helper race and an over-tight snapshot-read bound in `InlineAttemptTest` were fixed in the tests and repeat-tested (100 and 500 iterations, 0 failures).
+
+### Limitations
+
+- No TLS: terminate it in front of the gateway. `/metrics` is unauthenticated (bind or firewall it). The client identity for rate limiting is the TCP peer address (behind another proxy every client looks alike).
+- Anyone who can register an instance can make the gateway connect to any `host:port` it can reach: register only from trusted callers (set `admin.token_env`).
+- `least_connections` still pays two PostgreSQL writes per request (1.8K req/s measured); a shared counter outside PostgreSQL is a later design decision.
+- Circuit breaker state and the routing snapshot are per gateway process (not shared between instances, lost on restart); the rate-limit buckets and the response cache are shared through Redis as before.

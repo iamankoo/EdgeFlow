@@ -15,6 +15,11 @@ using HttpResponse = http::response<http::string_body>;
 inline constexpr std::string_view kServerName = "EdgeFlow/" EDGEFLOW_VERSION;
 inline constexpr std::string_view kJsonContentType = "application/json";
 
+// A request target made safe to write to a log: the query string (which may carry tokens or other secrets) is
+// replaced by "?<query omitted>" and the rest is cut at 200 characters. Beast has already refused control
+// characters in a target, so what remains is printable.
+[[nodiscard]] std::string loggableTarget(std::string_view target);
+
 // Builds a complete response (Server, Content-Type, Content-Length, keep-alive set).
 [[nodiscard]] HttpResponse makeResponse(unsigned version, bool keep_alive, http::status status,
                                         std::string_view content_type, std::string body);

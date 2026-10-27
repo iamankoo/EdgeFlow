@@ -1,0 +1,127 @@
+Linux 6.8.0-1064-azure (codespaces-bbfe87) 	10/15/26 	_x86_64_	(4 CPU)
+
+08:42:18      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:19     1000    304326   77.00   88.00    0.00    1.00  165.00     1  edgeflow-final
+
+08:42:18      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:19     1000    304326     19.00      0.00 1204652   16512   0.10  edgeflow-final
+
+08:42:19      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:20     1000    304326   89.00   92.00    0.00    0.00  181.00     0  edgeflow-final
+
+08:42:19      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:20     1000    304326      0.00      0.00 1204652   16512   0.10  edgeflow-final
+
+08:42:20      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:21     1000    304326   85.00   98.00    0.00    1.00  183.00     0  edgeflow-final
+
+08:42:20      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:21     1000    304326      3.00      0.00 1204652   16512   0.10  edgeflow-final
+
+08:42:21      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:22     1000    304326   88.00   92.00    0.00    1.00  180.00     1  edgeflow-final
+
+08:42:21      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:22     1000    304326      0.00      0.00 1204652   16512   0.10  edgeflow-final
+
+08:42:22      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:23     1000    304326   84.00   92.00    0.00    0.00  176.00     3  edgeflow-final
+
+08:42:22      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:23     1000    304326      0.00      0.00 1204652   16512   0.10  edgeflow-final
+
+08:42:23      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:24     1000    304326   88.00   83.00    0.00    1.00  171.00     0  edgeflow-final
+
+08:42:23      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:24     1000    304326      6.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:24      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:25     1000    304326   89.00   93.00    0.00    1.00  182.00     1  edgeflow-final
+
+08:42:24      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:25     1000    304326      7.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:25      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:26     1000    304326   91.00   90.00    0.00    1.00  181.00     1  edgeflow-final
+
+08:42:25      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:26     1000    304326      0.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:26      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:27     1000    304326   80.00   84.00    0.00    0.00  164.00     0  edgeflow-final
+
+08:42:26      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:27     1000    304326      3.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:27      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:28     1000    304326   78.00   87.00    0.00    0.00  165.00     3  edgeflow-final
+
+08:42:27      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:28     1000    304326      0.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:28      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:29     1000    304326   67.00   85.00    0.00    1.00  152.00     3  edgeflow-final
+
+08:42:28      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:29     1000    304326      1.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:29      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:30     1000    304326   88.00   93.00    0.00    0.00  181.00     3  edgeflow-final
+
+08:42:29      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:30     1000    304326      1.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:30      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:31     1000    304326   87.00   92.00    0.00    1.00  179.00     3  edgeflow-final
+
+08:42:30      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:31     1000    304326      1.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:31      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:32     1000    304326   54.00  142.00    0.00    0.00  196.00     3  edgeflow-final
+
+08:42:31      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:32     1000    304326      1.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:32      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:33     1000    304326   47.00  146.00    0.00    0.00  193.00     0  edgeflow-final
+
+08:42:32      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:33     1000    304326      0.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:33      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:34     1000    304326   48.00  141.00    0.00    1.00  189.00     0  edgeflow-final
+
+08:42:33      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:34     1000    304326      0.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:34      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:35     1000    304326   56.00  140.00    0.00    0.00  196.00     3  edgeflow-final
+
+08:42:34      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:35     1000    304326      0.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:35      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:36     1000    304326   52.00  140.00    0.00    1.00  192.00     1  edgeflow-final
+
+08:42:35      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:36     1000    304326      0.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:36      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:37     1000    304326   58.00  122.00    0.00    0.00  180.00     1  edgeflow-final
+
+08:42:36      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:37     1000    304326      0.00      0.00 1204652   16640   0.10  edgeflow-final
+
+08:42:37      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+08:42:38     1000    304326   33.00  113.00    0.00    1.00  146.00     2  edgeflow-final
+
+08:42:37      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+08:42:38     1000    304326      0.00      0.00 1204652   16640   0.10  edgeflow-final
+
+Average:      UID       PID    %usr %system  %guest   %wait    %CPU   CPU  Command
+Average:     1000    304326   71.95  105.65    0.00    0.55  177.60     -  edgeflow-final
+
+Average:      UID       PID  minflt/s  majflt/s     VSZ     RSS   %MEM  Command
+Average:     1000    304326      2.10      0.00 1204652   16608   0.10  edgeflow-final

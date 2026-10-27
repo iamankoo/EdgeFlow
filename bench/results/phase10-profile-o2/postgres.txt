@@ -1,0 +1,8 @@
+ calls | total_ms | mean_ms | pct  |                                                     query                                                      
+-------+----------+---------+------+----------------------------------------------------------------------------------------------------------------
+   983 |       71 |   0.072 | 95.8 | SELECT s.id, i.instance_id, i.host, i.port, i.status, i.health_status, i.version, i.weight, i.connection_count
+     8 |        2 |   0.265 |  2.9 | select coalesce(wait_event_type,$1)||$2||coalesce(wait_event,$3)||$4||state||$5 from pg_stat_activity where da
+    12 |        1 |   0.072 |  1.2 | SELECT s.name, i.instance_id, i.host, i.port, i.status, i.health_status, i.version, i.weight, i.connection_cou
+     1 |        0 |   0.103 |  0.1 | select pg_stat_statements_reset()
+(4 rows)
+

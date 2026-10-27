@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -12,7 +13,10 @@
 
 #include <boost/asio.hpp>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include "edgeflow/discovery/Prober.hpp"
 #include "support/NetTestSupport.hpp"
@@ -179,12 +183,32 @@ class RawServer {
   std::string last_request_;
 };
 
-// A port nothing listens on (bound once, then released).
+// A port nothing listens on: connecting to it is refused. The number is reserved by a socket that is bound but
+// never listens and stays open for the next 64 calls. (Releasing it at once, as this helper once did, let the kernel
+// give the same number to a server the test started next, for example its own gateway: a rare, confusing failure.
+// Older reservations are released so that a test repeated many times in one process does not run out of descriptors.)
 inline std::uint16_t closedPort() {
-  boost::asio::io_context io;
-  boost::asio::ip::tcp::acceptor acceptor(
-      io, boost::asio::ip::tcp::endpoint{boost::asio::ip::make_address("127.0.0.1"), 0});
-  return acceptor.local_endpoint().port();
+  static std::mutex mutex;
+  static std::deque<int> reserved;
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) return 0;
+  ::sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  ::socklen_t length = sizeof(address);
+  if (::bind(fd, reinterpret_cast<::sockaddr*>(&address), length) != 0 ||
+      ::getsockname(fd, reinterpret_cast<::sockaddr*>(&address), &length) != 0) {
+    ::close(fd);
+    return 0;
+  }
+  std::lock_guard lock(mutex);
+  reserved.push_back(fd);
+  if (reserved.size() > 64) {
+    ::close(reserved.front());
+    reserved.pop_front();
+  }
+  return ntohs(address.sin_port);
 }
 
 // Runs one probe to completion on a private io_context.

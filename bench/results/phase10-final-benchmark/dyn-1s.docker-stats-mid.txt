@@ -1,0 +1,15 @@
+ef-prof-bad cpu=0.01% mem=14.25MiB / 15.62GiB
+ef-prof-b11 cpu=0.05% mem=1.973MiB / 15.62GiB
+ef-prof-b10 cpu=10.82% mem=2.109MiB / 15.62GiB
+ef-prof-b9 cpu=10.51% mem=2.418MiB / 15.62GiB
+ef-prof-b8 cpu=10.08% mem=2.098MiB / 15.62GiB
+ef-prof-b7 cpu=10.90% mem=2.07MiB / 15.62GiB
+ef-prof-b6 cpu=10.94% mem=2.066MiB / 15.62GiB
+ef-prof-b5 cpu=10.43% mem=2.059MiB / 15.62GiB
+ef-prof-b4 cpu=10.78% mem=2.066MiB / 15.62GiB
+ef-prof-b3 cpu=10.20% mem=2.059MiB / 15.62GiB
+ef-prof-b2 cpu=0.00% mem=2.102MiB / 15.62GiB
+ef-prof-b1 cpu=4.43% mem=1.887MiB / 15.62GiB
+ef-prof-redis cpu=43.90% mem=3.48MiB / 15.62GiB
+ef-prof-pg cpu=1.64% mem=52.43MiB / 15.62GiB
+ef-redis cpu=0.28% mem=3.527MiB / 15.62GiB

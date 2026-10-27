@@ -1,0 +1,17 @@
+date_utc: 2026-10-15T08:07:24Z
+kernel: Linux 6.8.0-1064-azure
+cpus: 4
+cpu_model: AMD EPYC 7763 64-Core Processor
+memory: 15Gi
+wrk: wrk debian/4.1.0-4build2 [epoll] Copyright (C) 2012 Will Glozer
+backend_image: edgeflow:phase9 sha256:8cd24ffa32f9b0e62b05252602fc87a75ee7f0f5376422dd9ed9068c6ecbed13
+git_commit: ea0292a907c7a66fc021569a2e8234bfad9bb6d4
+wrk_threads: 2
+wrk_connections: 64
+warmup_seconds: 5
+run_seconds: 20
+runs: 3
+backends: 3 (EdgeFlow instances)
+variants:
+  o3-nagle-on|/workspaces/bin/edgeflow-o3|connection_counting: auto|snapshot_ttl_ms: 250|
+  o4-nodelay|/workspaces/bin/edgeflow-o4|connection_counting: auto|snapshot_ttl_ms: 250|

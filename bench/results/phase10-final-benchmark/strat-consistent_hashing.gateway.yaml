@@ -1,0 +1,72 @@
+# Template used by bench/profile/lib.sh: the load-test configuration (bench/load/gateway.yaml) with PostgreSQL and
+# Redis at the addresses of their containers (172.17.0.3, 172.17.0.4), so the gateway can run as a native process
+# under perf. The @..._OPTIONS@ markers receive the extra lines of a variant (bench/profile/ab.sh) or are removed.
+# Everything a production-like gateway does is ON (registry, health checks, routing, proxy,
+# reliability, Redis cache, Redis rate limiting, metrics); only logging is quieted so the
+# benchmark does not measure the terminal, and the rate limit is so large that it never refuses
+# (the limiter still runs one Redis script per proxied request).
+application:
+  name: edgeflow-bench
+  environment: staging
+  log_level: warn
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  worker_threads: 2
+  max_connections: 4096
+
+database:
+  enabled: true
+  host: 172.17.0.3
+  port: 5432
+  name: edgeflow
+  user: edgeflow
+  password_env: EDGEFLOW_DB_PASSWORD
+  pool_size: 8
+
+health_check:
+  enabled: true
+  type: http
+  interval_ms: 2000
+  timeout_ms: 1000
+  failure_threshold: 3
+  success_threshold: 2
+
+routing:
+  strategy: consistent_hashing
+  snapshot_ttl_ms: 250
+
+proxy:
+  enabled: true
+  io_threads: 2
+  upstream_timeout_ms: 10000
+  connection_counting: auto
+
+reliability:
+  enabled: true
+
+redis:
+  enabled: true
+  host: 172.17.0.4
+  pool_size: 4
+  io_threads: 1
+
+cache:
+  enabled: true
+  default_ttl_seconds: 600
+  max_ttl_seconds: 3600
+
+rate_limit:
+  enabled: true
+  ip:
+    enabled: true
+    capacity: 1000000
+    refill_per_second: 1000000
+
+metrics:
+  enabled: true
+  window_seconds: 10
+
+shutdown:
+  grace_period_seconds: 5

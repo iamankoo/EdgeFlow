@@ -1,0 +1,16 @@
+# The backends of the final benchmark: EdgeFlow instances used as fast C++ web servers (GET / answers a small JSON
+# banner), with /metrics on so that the number of requests each one served can be read back. No registry, no proxy.
+application:
+  name: edgeflow-backend
+  environment: staging
+  log_level: warn
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  worker_threads: 2
+  max_connections: 4096
+
+metrics:
+  enabled: true
+  window_seconds: 10

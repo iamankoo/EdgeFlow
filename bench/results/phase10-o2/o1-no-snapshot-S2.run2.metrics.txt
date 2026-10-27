@@ -1,0 +1,247 @@
+# HELP edgeflow_build_info Build information (the value is always 1).
+# TYPE edgeflow_build_info gauge
+edgeflow_build_info{version="0.1.0"} 1
+# HELP edgeflow_uptime_seconds Seconds since the metrics were created (process start).
+# TYPE edgeflow_uptime_seconds gauge
+edgeflow_uptime_seconds 50.8345432
+# HELP edgeflow_http_requests_total Client-facing requests completed, by kind (proxy = /proxy/..., local = everything else except /metrics).
+# TYPE edgeflow_http_requests_total counter
+edgeflow_http_requests_total{kind="proxy"} 214082
+edgeflow_http_requests_total{kind="local"} 10
+# HELP edgeflow_http_responses_total Client-facing responses by status class.
+# TYPE edgeflow_http_responses_total counter
+edgeflow_http_responses_total{class="2xx"} 214092
+edgeflow_http_responses_total{class="3xx"} 0
+edgeflow_http_responses_total{class="4xx"} 0
+edgeflow_http_responses_total{class="5xx"} 0
+edgeflow_http_responses_total{class="other"} 0
+# HELP edgeflow_http_errors_total Client-facing responses with a 5xx status.
+# TYPE edgeflow_http_errors_total counter
+edgeflow_http_errors_total 0
+# HELP edgeflow_http_in_flight_requests Requests being handled right now.
+# TYPE edgeflow_http_in_flight_requests gauge
+edgeflow_http_in_flight_requests 0
+# HELP edgeflow_http_request_duration_seconds Time from the request reaching the handler to its response being ready, since start.
+# TYPE edgeflow_http_request_duration_seconds histogram
+edgeflow_http_request_duration_seconds_bucket{le="0.000118920712"} 1
+edgeflow_http_request_duration_seconds_bucket{le="0.000168179283"} 1
+edgeflow_http_request_duration_seconds_bucket{le="0.000237841423"} 1
+edgeflow_http_request_duration_seconds_bucket{le="0.000336358566"} 1
+edgeflow_http_request_duration_seconds_bucket{le="0.000475682846"} 1
+edgeflow_http_request_duration_seconds_bucket{le="0.000672717132"} 7
+edgeflow_http_request_duration_seconds_bucket{le="0.000951365692"} 9
+edgeflow_http_request_duration_seconds_bucket{le="0.00134543426"} 9
+edgeflow_http_request_duration_seconds_bucket{le="0.00190273138"} 12
+edgeflow_http_request_duration_seconds_bucket{le="0.00269086853"} 35
+edgeflow_http_request_duration_seconds_bucket{le="0.00380546277"} 111
+edgeflow_http_request_duration_seconds_bucket{le="0.00538173706"} 391
+edgeflow_http_request_duration_seconds_bucket{le="0.00761092554"} 1855
+edgeflow_http_request_duration_seconds_bucket{le="0.0107634741"} 25369
+edgeflow_http_request_duration_seconds_bucket{le="0.0152218511"} 191283
+edgeflow_http_request_duration_seconds_bucket{le="0.0215269482"} 211846
+edgeflow_http_request_duration_seconds_bucket{le="0.0304437021"} 213896
+edgeflow_http_request_duration_seconds_bucket{le="0.0430538965"} 214087
+edgeflow_http_request_duration_seconds_bucket{le="0.0608874043"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="0.0861077929"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="0.121774809"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="0.172215586"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="0.243549617"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="0.344431172"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="0.487099234"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="0.688862343"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="0.974198469"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="1.37772469"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="1.94839694"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="2.75544937"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="3.89679387"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="5.51089875"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="7.79358775"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="11.0217975"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="15.5871755"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="22.043595"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="31.174351"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="44.08719"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="62.348702"} 214092
+edgeflow_http_request_duration_seconds_bucket{le="+Inf"} 214092
+edgeflow_http_request_duration_seconds_sum 2756.92057
+edgeflow_http_request_duration_seconds_count 214092
+# HELP edgeflow_http_window_seconds Length of the sliding window of the gauges below.
+# TYPE edgeflow_http_window_seconds gauge
+edgeflow_http_window_seconds 10
+# HELP edgeflow_http_requests_per_second Requests completed per second over the completed seconds of the window.
+# TYPE edgeflow_http_requests_per_second gauge
+edgeflow_http_requests_per_second 4606.1
+# HELP edgeflow_http_error_ratio Share of 5xx responses among the requests of the window (NaN without requests).
+# TYPE edgeflow_http_error_ratio gauge
+edgeflow_http_error_ratio 0
+# HELP edgeflow_http_request_latency_seconds Request latency quantiles over the window (NaN without requests).
+# TYPE edgeflow_http_request_latency_seconds gauge
+edgeflow_http_request_latency_seconds{quantile="0.5"} 0.0126056062
+edgeflow_http_request_latency_seconds{quantile="0.95"} 0.0191046738
+edgeflow_http_request_latency_seconds{quantile="0.99"} 0.0255988567
+# HELP edgeflow_backend_latency_seconds Time of one exchange with a backend that answered (any status), since start.
+# TYPE edgeflow_backend_latency_seconds histogram
+edgeflow_backend_latency_seconds_bucket{le="0.000118920712"} 1
+edgeflow_backend_latency_seconds_bucket{le="0.000168179283"} 59
+edgeflow_backend_latency_seconds_bucket{le="0.000237841423"} 193
+edgeflow_backend_latency_seconds_bucket{le="0.000336358566"} 423
+edgeflow_backend_latency_seconds_bucket{le="0.000475682846"} 730
+edgeflow_backend_latency_seconds_bucket{le="0.000672717132"} 1149
+edgeflow_backend_latency_seconds_bucket{le="0.000951365692"} 1789
+edgeflow_backend_latency_seconds_bucket{le="0.00134543426"} 2765
+edgeflow_backend_latency_seconds_bucket{le="0.00190273138"} 4406
+edgeflow_backend_latency_seconds_bucket{le="0.00269086853"} 8022
+edgeflow_backend_latency_seconds_bucket{le="0.00380546277"} 23293
+edgeflow_backend_latency_seconds_bucket{le="0.00538173706"} 139000
+edgeflow_backend_latency_seconds_bucket{le="0.00761092554"} 209720
+edgeflow_backend_latency_seconds_bucket{le="0.0107634741"} 213585
+edgeflow_backend_latency_seconds_bucket{le="0.0152218511"} 214063
+edgeflow_backend_latency_seconds_bucket{le="0.0215269482"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.0304437021"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.0430538965"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.0608874043"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.0861077929"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.121774809"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.172215586"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.243549617"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.344431172"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.487099234"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.688862343"} 214082
+edgeflow_backend_latency_seconds_bucket{le="0.974198469"} 214082
+edgeflow_backend_latency_seconds_bucket{le="1.37772469"} 214082
+edgeflow_backend_latency_seconds_bucket{le="1.94839694"} 214082
+edgeflow_backend_latency_seconds_bucket{le="2.75544937"} 214082
+edgeflow_backend_latency_seconds_bucket{le="3.89679387"} 214082
+edgeflow_backend_latency_seconds_bucket{le="5.51089875"} 214082
+edgeflow_backend_latency_seconds_bucket{le="7.79358775"} 214082
+edgeflow_backend_latency_seconds_bucket{le="11.0217975"} 214082
+edgeflow_backend_latency_seconds_bucket{le="15.5871755"} 214082
+edgeflow_backend_latency_seconds_bucket{le="22.043595"} 214082
+edgeflow_backend_latency_seconds_bucket{le="31.174351"} 214082
+edgeflow_backend_latency_seconds_bucket{le="44.08719"} 214082
+edgeflow_backend_latency_seconds_bucket{le="62.348702"} 214082
+edgeflow_backend_latency_seconds_bucket{le="+Inf"} 214082
+edgeflow_backend_latency_seconds_sum 1074.57856
+edgeflow_backend_latency_seconds_count 214082
+# HELP edgeflow_backend_latency_window_seconds Backend latency quantiles over the window (NaN without answers).
+# TYPE edgeflow_backend_latency_window_seconds gauge
+edgeflow_backend_latency_window_seconds{quantile="0.5"} 0.00497641672
+edgeflow_backend_latency_window_seconds{quantile="0.95"} 0.00732530551
+edgeflow_backend_latency_window_seconds{quantile="0.99"} 0.0100999226
+# HELP edgeflow_backend_answers_per_second Backend answers per second over the completed seconds of the window.
+# TYPE edgeflow_backend_answers_per_second gauge
+edgeflow_backend_answers_per_second 4606.1
+# HELP edgeflow_http_active_connections Client connections open right now.
+# TYPE edgeflow_http_active_connections gauge
+edgeflow_http_active_connections 1
+# HELP edgeflow_http_connections_accepted_total Client connections accepted.
+# TYPE edgeflow_http_connections_accepted_total counter
+edgeflow_http_connections_accepted_total 209
+# HELP edgeflow_http_connections_rejected_total Client connections closed at once because server.max_connections was reached.
+# TYPE edgeflow_http_connections_rejected_total counter
+edgeflow_http_connections_rejected_total 0
+# HELP edgeflow_proxy_requests_total Proxied requests started.
+# TYPE edgeflow_proxy_requests_total counter
+edgeflow_proxy_requests_total 214082
+# HELP edgeflow_proxy_active_requests Proxied requests in flight.
+# TYPE edgeflow_proxy_active_requests gauge
+edgeflow_proxy_active_requests 0
+# HELP edgeflow_proxy_backend_responses_total Backend responses forwarded to clients (any status).
+# TYPE edgeflow_proxy_backend_responses_total counter
+edgeflow_proxy_backend_responses_total 214082
+# HELP edgeflow_proxy_gateway_errors_total Responses EdgeFlow generated itself (400/404/502/503/504).
+# TYPE edgeflow_proxy_gateway_errors_total counter
+edgeflow_proxy_gateway_errors_total 0
+# HELP edgeflow_backend_attempts_total Attempts to reach a backend, by outcome.
+# TYPE edgeflow_backend_attempts_total counter
+edgeflow_backend_attempts_total{outcome="success"} 214082
+edgeflow_backend_attempts_total{outcome="retryable_status"} 0
+edgeflow_backend_attempts_total{outcome="not_sent"} 0
+edgeflow_backend_attempts_total{outcome="maybe_processed"} 0
+edgeflow_backend_attempts_total{outcome="permanent"} 0
+edgeflow_backend_attempts_total{outcome="cancelled"} 0
+# HELP edgeflow_upstream_connections_created_total New connections opened to backends.
+# TYPE edgeflow_upstream_connections_created_total counter
+edgeflow_upstream_connections_created_total 98
+# HELP edgeflow_upstream_connections_reused_total Requests that reused an idle pooled backend connection.
+# TYPE edgeflow_upstream_connections_reused_total counter
+edgeflow_upstream_connections_reused_total 213984
+# HELP edgeflow_upstream_connections_stale_total Idle pooled connections found dead at check-out.
+# TYPE edgeflow_upstream_connections_stale_total counter
+edgeflow_upstream_connections_stale_total 36
+# HELP edgeflow_retries_total Attempts that followed a failed attempt of the same request.
+# TYPE edgeflow_retries_total counter
+edgeflow_retries_total 0
+# HELP edgeflow_failovers_total Retries that went to a different backend.
+# TYPE edgeflow_failovers_total counter
+edgeflow_failovers_total 0
+# HELP edgeflow_retry_exhausted_total Requests that gave up with retries or time budget spent.
+# TYPE edgeflow_retry_exhausted_total counter
+edgeflow_retry_exhausted_total 0
+# HELP edgeflow_circuit_breaker_trips_total Times a backend's circuit opened (closed or half-open to open).
+# TYPE edgeflow_circuit_breaker_trips_total counter
+edgeflow_circuit_breaker_trips_total 0
+# HELP edgeflow_circuit_breaker_rejections_total Backends skipped because their circuit refused.
+# TYPE edgeflow_circuit_breaker_rejections_total counter
+edgeflow_circuit_breaker_rejections_total 0
+# HELP edgeflow_circuit_breakers Backend circuits that exist, by state.
+# TYPE edgeflow_circuit_breakers gauge
+edgeflow_circuit_breakers{state="closed"} 3
+edgeflow_circuit_breakers{state="open"} 0
+edgeflow_circuit_breakers{state="half_open"} 0
+# HELP edgeflow_routing_snapshots_total Routing decisions by where the routable set came from: a snapshot kept for routing.snapshot_ttl_ms (hit) or a read from the registry (read).
+# TYPE edgeflow_routing_snapshots_total counter
+edgeflow_routing_snapshots_total{source="snapshot"} 0
+edgeflow_routing_snapshots_total{source="registry"} 214082
+# HELP edgeflow_policy_requests_total Proxied requests that entered rate limiting / caching.
+# TYPE edgeflow_policy_requests_total counter
+edgeflow_policy_requests_total 214082
+# HELP edgeflow_policy_served_from_cache_total Requests answered from the cache.
+# TYPE edgeflow_policy_served_from_cache_total counter
+edgeflow_policy_served_from_cache_total 0
+# HELP edgeflow_policy_forwarded_total Requests handed on to the proxy.
+# TYPE edgeflow_policy_forwarded_total counter
+edgeflow_policy_forwarded_total 214082
+# HELP edgeflow_rate_limit_decisions_total Rate limit decisions.
+# TYPE edgeflow_rate_limit_decisions_total counter
+edgeflow_rate_limit_decisions_total{result="allowed"} 214082
+edgeflow_rate_limit_decisions_total{result="limited"} 0
+edgeflow_rate_limit_decisions_total{result="degraded_allowed"} 0
+edgeflow_rate_limit_decisions_total{result="degraded_rejected"} 0
+# HELP edgeflow_cache_lookups_total Cache lookups by result (error = Redis could not answer: the request bypassed the cache).
+# TYPE edgeflow_cache_lookups_total counter
+edgeflow_cache_lookups_total{result="hit"} 0
+edgeflow_cache_lookups_total{result="miss"} 1
+edgeflow_cache_lookups_total{result="error"} 0
+# HELP edgeflow_cache_hit_ratio Cache hits / (hits + misses) since start (NaN before the first lookup).
+# TYPE edgeflow_cache_hit_ratio gauge
+edgeflow_cache_hit_ratio 0
+# HELP edgeflow_cache_stores_total Responses stored in the cache.
+# TYPE edgeflow_cache_stores_total counter
+edgeflow_cache_stores_total 1
+# HELP edgeflow_cache_store_failures_total Stores that failed.
+# TYPE edgeflow_cache_store_failures_total counter
+edgeflow_cache_store_failures_total 0
+# HELP edgeflow_cache_invalidations_total Entries removed because a write succeeded.
+# TYPE edgeflow_cache_invalidations_total counter
+edgeflow_cache_invalidations_total 0
+# HELP edgeflow_rejected_requests_total Requests refused by the gateway: 429 (rate_limited), 503 because Redis was down and the limiter fails closed (rate_limit_unavailable), connections closed at the connection limit (connection_limit).
+# TYPE edgeflow_rejected_requests_total counter
+edgeflow_rejected_requests_total{reason="rate_limited"} 0
+edgeflow_rejected_requests_total{reason="rate_limit_unavailable"} 0
+edgeflow_rejected_requests_total{reason="connection_limit"} 0
+# HELP edgeflow_redis_up 1 while Redis answers, 0 while commands fail at once after a failure.
+# TYPE edgeflow_redis_up gauge
+edgeflow_redis_up 1
+# HELP edgeflow_redis_commands_total Redis commands submitted.
+# TYPE edgeflow_redis_commands_total counter
+edgeflow_redis_commands_total 214086
+# HELP edgeflow_redis_failures_total Redis commands that ended with a transport error.
+# TYPE edgeflow_redis_failures_total counter
+edgeflow_redis_failures_total 0
+# HELP edgeflow_redis_fast_failures_total ... of which failed at once without touching the network.
+# TYPE edgeflow_redis_fast_failures_total counter
+edgeflow_redis_fast_failures_total 0
+# HELP edgeflow_redis_connections_opened_total Connections opened to Redis.
+# TYPE edgeflow_redis_connections_opened_total counter
+edgeflow_redis_connections_opened_total 4

@@ -33,11 +33,13 @@ health_check:
 
 routing:
   strategy: round_robin
+  snapshot_ttl_ms: 250     # Phase 10 (see bench/results/phase10-*)
 
 proxy:
   enabled: true
   io_threads: 2
   upstream_timeout_ms: 10000
+  connection_counting: auto   # Phase 10
 
 reliability:
   enabled: true

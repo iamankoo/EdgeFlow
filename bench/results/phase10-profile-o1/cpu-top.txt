@@ -1,0 +1,14 @@
+ 10.97% [k] _raw_spin_unlock_irqrestore - - 
+ 2.02% [.] __libc_recv - - 
+ 1.56% [k] finish_task_switch.isra.0 - - 
+ 1.55% [k] do_syscall_64 - - 
+ 1.35% [.] malloc - - 
+ 1.31% [.] _int_malloc - - 
+ 1.22% [k] srso_alias_safe_ret - - 
+ 1.16% [k] __raw_spin_unlock_irq - - 
+ 1.12% [.] cfree@GLIBC_2.2.5 - - 
+ 1.01% [.] pthread_mutex_lock@@GLIBC_2.2.5 - - 
+ 0.99% [k] __fdget - - 
+ 0.92% [.] epoll_wait - - 
+ 0.81% [k] audit_reset_context.part.0.constprop.0 - - 
+ 0.81% [k] syscall_exit_to_user_mode_prepare - - 
